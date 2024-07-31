@@ -1,0 +1,7 @@
+[build]
+# command=go run ./cmd/compiledb/main.go -p ./tests/build.log 
+command=go run ./cmd/compiledb/main.go -p ./tests/build.log make
+# command=go test ./cmd/compiledb
+
+[release]
+command=go build && go install

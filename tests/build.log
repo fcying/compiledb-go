@@ -1,0 +1,10 @@
++PRE-BUILD
+clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -integrated-as -Oz -g -flto -Wundef -Wreturn-type -mllvm -pi32v2-large-program=true -w  -I../include  -MM -MT objs/main.c.o main.c -o objs/main.c.d
+
+clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -integrated-as -Oz -g -flto -Wundef -Wreturn-type -mllvm -pi32v2-large-program=true -w  -I../include  -c main.c -o objs/main.c.o
+
+clang.exe -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -integrated-as -Oz -g -flto -Wundef -Wreturn-type -mllvm -pi32v2-large-program=true -w  -I../include  -c main.cc -o objs/main.cc.o
+
+gcc -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -integrated-as -Oz -g -flto -Wundef -Wreturn-type -mllvm -pi32v2-large-program=true -w  -I../include  -c main3.c -o objs/main3.c.o
+
++POST-BUILD
