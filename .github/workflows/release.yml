@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags: v[0-9]+.[0-9]+.[0-9]+
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - run: go version
+
+      - name: Install dependencies
+        run: go mod tidy
+
+      - name: Build
+        run: |
+          out=$(pwd)/build
+          mkdir -p $out
+
+          cd ./cmd/compiledb
+
+          GOOS=linux GOARCH=amd64 go build
+          chmod +x compiledb 
+          tar cJvf compiledb.txz compiledb
+          mv compiledb.txz $out/compiledb-linux-amd64.txz
+
+          GOOS=linux GOARCH=arm64 go build
+          chmod +x compiledb 
+          tar cJvf compiledb.txz compiledb
+          mv compiledb.txz $out/compiledb-linux-arm64.txz
+
+          GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui"
+          7z a compiledb.7z compiledb.exe
+          mv compiledb.7z $out/compiledb-windows-amd64.7z
+
+          GOOS=darwin GOARCH=arm64 go build
+          chmod +x compiledb 
+          tar cJvf compiledb.txz compiledb
+          mv compiledb.txz $out/compiledb-darwin-arm64.txz
+
+          ls -la $out
+
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          generateReleaseNotes: true
+          artifacts: "build/*"

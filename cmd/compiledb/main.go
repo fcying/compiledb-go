@@ -45,7 +45,7 @@ COMMANDS:
 	app := &cli.App{
 		// Compiled:             time.Now()
 		EnableBashCompletion:   true,
-		Version:                "1.1.0",
+		Version:                "1.0.0",
 		UseShortOptionHandling: true,
 		HideHelpCommand:        true,
 		HideVersion:            true,
