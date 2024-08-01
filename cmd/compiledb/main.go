@@ -9,10 +9,12 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+var Version string = "v1.1.0"
+
 func init() {
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.WarnLevel)
 	// log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.WarnLevel)
 }
 
 func updateConfig(ctx *cli.Context) {
@@ -30,7 +32,8 @@ func updateConfig(ctx *cli.Context) {
 }
 
 func main() {
-	cli.AppHelpTemplate = `{{.HelpName}} v{{.Version}}
+
+	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
 USAGE: {{.Name}} {{if .VisibleFlags}}[options]{{end}}{{if .Commands}} command [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[args]...
 {{end}}
@@ -45,7 +48,7 @@ COMMANDS:
 	app := &cli.App{
 		// Compiled:             time.Now()
 		EnableBashCompletion:   true,
-		Version:                "1.0.0",
+		Version:                Version,
 		UseShortOptionHandling: true,
 		HideHelpCommand:        true,
 		HideVersion:            true,
@@ -108,6 +111,7 @@ COMMANDS:
 				DisableDefaultText: true,
 				Action: func(*cli.Context, bool) error {
 					log.SetLevel(log.DebugLevel)
+					log.Println("compiledb-go start, version:", Version)
 					return nil
 				},
 			},

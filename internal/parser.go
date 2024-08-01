@@ -48,15 +48,14 @@ func Parse(buildLog []string) {
 	if ParseConfig.BuildDir != "" {
 		workingDir = ParseConfig.BuildDir
 	} else {
-		workingDir, err = os.Getwd()
-		if err != nil {
-			log.Fatalf("get workingDir failed! %v", err)
-		}
 		if ParseConfig.InputFile != "stdin" {
 			absPath, _ := filepath.Abs(ParseConfig.InputFile)
 			workingDir = filepath.Dir(absPath)
+		} else {
+			workingDir, _ = os.Getwd()
 		}
 	}
+	workingDir = ConvertLinuxPath(workingDir)
 	log.Printf("workingDir: %s", workingDir)
 
 	dirStack := []string{workingDir}
@@ -80,7 +79,7 @@ func Parse(buildLog []string) {
 		if make_enter_dir.MatchString(line) {
 			group := make_enter_dir.FindStringSubmatch(line)
 			if group != nil {
-				dirStack = append([]string{group[1]}, dirStack...)
+				dirStack = append([]string{ConvertLinuxPath(group[1])}, dirStack...)
 				workingDir = dirStack[0]
 				log.Printf("change workingDir: %s", workingDir)
 			}
@@ -122,6 +121,7 @@ func Parse(buildLog []string) {
 			if ParseConfig.FullPath {
 				compileFullPath = GetBinFullPath(arguments[0])
 				if compileFullPath != "" {
+					compileFullPath = ConvertLinuxPath(compileFullPath)
 					arguments[0] = compileFullPath
 				}
 			}
