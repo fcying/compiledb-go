@@ -41,7 +41,7 @@ jobs:
           tar cJvf compiledb.txz compiledb
           mv compiledb.txz $out/compiledb-linux-arm64.txz
 
-          GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui"
+          GOOS=windows GOARCH=amd64 go build
           7z a compiledb.7z compiledb.exe
           mv compiledb.7z $out/compiledb-windows-amd64.7z
 
