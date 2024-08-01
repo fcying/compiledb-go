@@ -24,6 +24,7 @@ func updateConfig(ctx *cli.Context) {
 	internal.ParseConfig.NoBuild = ctx.Bool("no-build")
 	internal.ParseConfig.CommandStyle = ctx.Bool("command-style")
 	internal.ParseConfig.NoStrict = ctx.Bool("no-strict")
+	internal.ParseConfig.FullPath = ctx.Bool("full-path")
 
 	log.Println(internal.ParseConfig)
 }
@@ -127,11 +128,11 @@ COMMANDS:
 				Aliases: []string{"m"},
 				Usage:   "Add predefined compiler macros to the compilation database.",
 			},
-			// &cli.BoolFlag{
-			// 	Name:               "full-path",
-			// 	Usage:              "Write full path to the compiler executable.",
-			// 	DisableDefaultText: true,
-			// },
+			&cli.BoolFlag{
+				Name:               "full-path",
+				Usage:              "Write full path to the compiler executable.",
+				DisableDefaultText: true,
+			},
 			&cli.BoolFlag{
 				Name:               "command-style",
 				Aliases:            []string{"c"},

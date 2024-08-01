@@ -37,7 +37,6 @@ func commandProcess(line string, workingDir string) ([]string, string) {
 	return arguments, filepath
 }
 
-// TODO use_full_path=False, extra_wrappers
 func Parse(buildLog []string) {
 	var (
 		err           error
@@ -104,6 +103,7 @@ func Parse(buildLog []string) {
 		// Parse command
 		arguments, filepath := commandProcess(line, workingDir)
 		command := ""
+		compileFullPath := ""
 		if filepath != "" {
 			if ParseConfig.NoStrict == false {
 				if FileExist(filepath) == false {
@@ -116,6 +116,13 @@ func Parse(buildLog []string) {
 				if exclude_regex.MatchString(filepath) {
 					log.Printf("file %s exclude", filepath)
 					continue
+				}
+			}
+
+			if ParseConfig.FullPath {
+				compileFullPath = GetBinFullPath(arguments[0])
+				if compileFullPath != "" {
+					arguments[0] = compileFullPath
 				}
 			}
 

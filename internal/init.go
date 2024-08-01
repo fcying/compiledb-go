@@ -19,6 +19,7 @@ type Config struct {
 	Exclude      string
 	Macros       string
 	CommandStyle bool
+	FullPath     bool
 	NoBuild      bool
 	NoStrict     bool
 }
@@ -37,6 +38,17 @@ func FileExist(filename string) bool {
 		return false
 	}
 	return true
+}
+
+func GetBinFullPath(name string) string {
+	log.Println(name)
+	path, err := exec.LookPath(name)
+	if err != nil {
+		log.Println("Error finding program:", err)
+		return ""
+	}
+	log.Println(path)
+	return path
 }
 
 func WriteJSON(filename string) {

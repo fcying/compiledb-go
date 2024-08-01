@@ -49,7 +49,8 @@ OPTIONS:
    --no-build, -n             Only generates compilation db file
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
-   --macros, -m               Add predefined compiler macros to the compilation database.
+   --macros value, -m value   Add predefined compiler macros to the compilation database.
+   --full-path                Write full path to the compiler executable.
    --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
    --help, -h                 show help
    
@@ -85,8 +86,8 @@ $ compiledb -n make
 from arbitrary text files (or stdin), assuming it has a build log (ideally generated using
 `make -Bnwk` command), and generates the corresponding JSON Compilation database.
 
-For example, to generate the compilation database from `build-log.txt` file, use the following
-command.
+For example, to generate the compilation database from `build-log.txt` file, using the `-p`
+or `--parse` options.
 ```bash
 $ compiledb --parse build-log.txt
 ```
@@ -103,9 +104,18 @@ $ make -Bnwk | compiledb -o -
 
 By default `compiledb` generates a JSON compilation database in the "arguments" list
 [format](https://clang.llvm.org/docs/JSONCompilationDatabase.html). The "command" string
-format is also supported through the use of the `--command-style` flag:
+format is also supported through the use of the `--command-style` or `-c` flag:
 ```bash
 $ compiledb --command-style make
+```
+
+`--full-path` searches the user's $PATH for the compiler executable and in
+case it's found, replaces the executable name with the full path to
+executable in "arguments" section in compilation database.
+This argument allows to specify the compiler path only once, when
+calling compiledb, like so:
+```
+PATH=/opt/buildroot/bin:$PATH compiledb --full-path make
 ```
 
 ## Testing / Contributing
