@@ -25,10 +25,8 @@ type Config struct {
 }
 
 var (
-	CommandCnt         = 0
-	ParseConfig Config = Config{
-		OutputFile: "compile_commands.json",
-	}
+	CommandCnt  = 0
+	ParseConfig Config
 	ParseResult []interface{}
 )
 
@@ -63,8 +61,8 @@ func WriteJSON(filename string) {
 
 func MakeWrap(args []string) {
 	var wg sync.WaitGroup
-	wg.Add(1)
 
+	wg.Add(1)
 	go func() {
 		// append log
 		args = append([]string{"-Bnkw"}, args...)
@@ -73,11 +71,22 @@ func MakeWrap(args []string) {
 		var stdoutBuf bytes.Buffer
 		cmd.Stdout = &stdoutBuf
 		cmd.Stderr = &stdoutBuf
-
 		cmd.Run()
+
+		level := log.GetLevel()
+
+		// only print make log
+		if ParseConfig.NoBuild == false {
+			log.SetLevel(log.PanicLevel)
+		}
 
 		buildLog := strings.Split(stdoutBuf.String(), "\n")
 		Parse(buildLog)
+
+		// restore log level
+		if ParseConfig.NoBuild == false {
+			log.SetLevel(level)
+		}
 
 		wg.Done()
 	}()

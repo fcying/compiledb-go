@@ -9,7 +9,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.1.0"
+var Version string = "v1.2.0"
 
 func init() {
 	log.SetOutput(os.Stdout)
@@ -32,7 +32,6 @@ func updateConfig(ctx *cli.Context) {
 }
 
 func main() {
-
 	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
 USAGE: {{.Name}} {{if .VisibleFlags}}[options]{{end}}{{if .Commands}} command [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[args]...

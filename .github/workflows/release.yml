@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: v[0-9]+.[0-9]+.[0-9]+
+    branches: [ master, test ]
   workflow_dispatch:
 
 defaults:
@@ -14,12 +14,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
       - run: go version
+
+      - name: Check need release
+        id: check_release
+        run: |
+          version=""
+          new_ver=$(grep -Po "v\d+\.\d+\.\d+" cmd/compiledb/main.go)
+          cur_ver=$(git describe --abbrev=0 --tags)
+          if [ "$new_ver" != "$cur_ver" ]; then
+            version=$new_ver
+          fi
+          echo "VERSION=$version" >> $GITHUB_ENV
 
       - name: Install dependencies
         run: go mod tidy
@@ -53,8 +68,10 @@ jobs:
           ls -la $out
 
       - name: Release
+        if: ${{ env.VERSION != '' }}
         uses: ncipollo/release-action@v1
         with:
+          tag: ${{ env.VERSION }}
           allowUpdates: true
           artifactErrorsFailBuild: true
           generateReleaseNotes: true
