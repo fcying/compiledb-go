@@ -1,6 +1,16 @@
 # Compilation Database Generator
 
-[nickdiego/compiledb](https://github.com/nickdiego/compiledb) go version.
+rewrite [nickdiego/compiledb](https://github.com/nickdiego/compiledb) in Go for speed.  
+test using a build_log file over 2MB in size with over 200 valid entries
+```
+compiledb-go
+# time ~/go/bin/compiledb -n make
+~/go/bin/compiledb -n make  0.21s user 0.02s system 106% cpu 0.210 total
+
+compiledb-python
+# time ~/.local/bin/compiledb -n make
+~/.local/bin/compiledb -n make  5.21s user 0.01s system 100% cpu 5.179 total
+```
 
 Tool for generating [Clang's JSON Compilation Database][compdb] file for GNU
 `make`-based build systems.
@@ -17,6 +27,8 @@ YCM-generator's fake-toolchanin approach.
 
 ```
 # go install github.com/fcying/compiledb-go/cmd/compiledb@latest
+
+# go build ./cmd/compiledb && go install ./cmd/compiledb
 ```
 
 ## Usage
