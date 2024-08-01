@@ -17,8 +17,33 @@ YCM-generator's fake-toolchanin approach.
 
 ```
 # go install github.com/fcying/compiledb-go/cmd/compiledb@latest
+```
 
 ## Usage
+```
+compiledb-go
+
+USAGE: compiledb [options] command [command options] [args]...
+
+  Clang's Compilation Database generator for make-based build systems.
+  When no subcommand is used it will parse build log/commands and generates
+  its corresponding Compilation datAbase.
+
+OPTIONS:
+   --parse file, -p file      Build log file to parse compilation commands. (default: "stdin")
+   --output file, -o file     Output file, Use '-' to output to stdout (default: "compile_commands.json")
+   --build-dir Path, -d Path  Path to be used as initial build dir.
+   --exclude value, -e value  Regular expressions to exclude files
+   --no-build, -n             Only generates compilation db file
+   --verbose, -v              Print verbose messages.
+   --no-strict, -S            Do not check if source files exist in the file system.
+   --macros, -m               Add predefined compiler macros to the compilation database.
+   --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
+   --help, -h                 show help
+   
+COMMANDS:
+   make  Generates compilation database file for an arbitrary GNU Make...
+```
 
 `compiledb` provides a `make` python wrapper script which, besides to execute the make
 build command, updates the JSON compilation database file corresponding to that build,
@@ -61,7 +86,7 @@ $ compiledb < build-log.txt
 
 Or even, to pipe make's output and print the compilation database to the standard output:
 ```bash
-$ make -Bnwk | compiledb -o-
+$ make -Bnwk | compiledb -o -
 ```
 
 By default `compiledb` generates a JSON compilation database in the "arguments" list
@@ -70,6 +95,24 @@ format is also supported through the use of the `--command-style` flag:
 ```bash
 $ compiledb --command-style make
 ```
+
+## Testing / Contributing
+
+I've implemented this tool because I needed to index some [AOSP][aosp]'s modules for navigating
+and studying purposes (after having no satisfatory results with current tools available by the
+time such as [YCM-Generator][ycm] and [Bear][bear]). So I've reworked YCM-Generator, which resulted
+in the initial version of [compiledb/parser.py](compiledb/parser.py) and used successfully to generate
+`compile_commands.json` for some AOSP modules in ~1min running in a [Docker][docker] container and then
+could use it with some great tools, such as:
+
+- [Vim][vim] + [YouCompleteMe][ycm] + [rtags][rtags] + [chromatica.nvim][chrom]
+- [Neovim][neovim] + [LanguageClient-neovim][lsp] + [cquery][cquery] + [deoplete][deoplete]
+- [Neovim][neovim] + [ALE][ale] + [ccls][ccls]
+
+Notice:
+- _Windows: tested on Windows 10 with cmd, wsl(Ubuntu), mingw32_
+- _Linux: tested only on Arch Linux and Ubuntu 18 so far_
+- _Mac: tested on macOS 10.13 and 10.14_
 
 ## License
 GNU GPLv3

@@ -15,6 +15,19 @@ func init() {
 	// log.SetLevel(log.InfoLevel)
 }
 
+func updateConfig(ctx *cli.Context) {
+	internal.ParseConfig.InputFile = ctx.String("parse")
+	internal.ParseConfig.OutputFile = ctx.String("output")
+	internal.ParseConfig.BuildDir = ctx.String("build-dir")
+	internal.ParseConfig.Exclude = ctx.String("exclude")
+	internal.ParseConfig.Macros = ctx.String("macros")
+	internal.ParseConfig.NoBuild = ctx.Bool("no-build")
+	internal.ParseConfig.CommandStyle = ctx.Bool("command-style")
+	internal.ParseConfig.NoStrict = ctx.Bool("no-strict")
+
+	log.Println(internal.ParseConfig)
+}
+
 func main() {
 	cli.AppHelpTemplate = `{{.HelpName}} v{{.Version}}
 
@@ -29,32 +42,31 @@ COMMANDS:
 {{range .Commands}}{{if not .HideHelp}}   {{join .Names ", "}}{{ "\t"}}{{.Usage}}{{ "\n" }}{{end}}{{end}}{{end}}
 `
 	app := &cli.App{
-		EnableBashCompletion: true,
-		Version:              "1.0.1",
 		// Compiled:             time.Now()
-		HideHelpCommand: true,
-		HideVersion:     true,
-		Name:            "compiledb",
-		HelpName:        "compiledb-go",
+		EnableBashCompletion:   true,
+		Version:                "1.1.0",
+		UseShortOptionHandling: true,
+		HideHelpCommand:        true,
+		HideVersion:            true,
+		Name:                   "compiledb",
+		HelpName:               "compiledb-go",
 		Description: "\tClang's Compilation Database generator for make-based build systems." +
 			"\n\tWhen no subcommand is used it will parse build log/commands and generates" +
 			"\n\tits corresponding Compilation datAbase.",
 		Action: func(ctx *cli.Context) error {
-			if ctx.Bool("v") {
-				log.SetLevel(log.DebugLevel)
-			}
-			internal.ParseBuildLog(ctx.String("p"), ctx.String("o"), ctx.Bool("command-style"),
-				ctx.Bool("no-build"),
-			)
+			updateConfig(ctx)
+			internal.Generate()
 			log.Println("Done")
 			return nil
 		},
 		Commands: []*cli.Command{
 			{
-				Name:  "make",
-				Usage: "Generates compilation database file for an arbitrary GNU Make...",
+				Name:            "make",
+				Usage:           "Generates compilation database file for an arbitrary GNU Make...",
+				SkipFlagParsing: true,
 				Action: func(ctx *cli.Context) error {
-					log.Error("TODO: make")
+					updateConfig(ctx)
+					internal.MakeWrap(ctx.Args().Slice())
 					return nil
 				},
 			},
@@ -63,30 +75,28 @@ COMMANDS:
 			&cli.StringFlag{
 				Name:    "parse",
 				Aliases: []string{"p"},
-				Usage:   "Build log file to parse compilation commands from `File`.",
+				Usage:   "Build log `file` to parse compilation commands.",
 				Value:   "stdin",
 			},
 			&cli.StringFlag{
-				//   -o, --output FILENAME  Output file path (Default: compile_commands.json). If
-				//                          -f/--overwrite is not specified, this file is updated
-				//                          with the new contents. Use '-' to output to stdout
 				Name:    "output",
 				Aliases: []string{"o"},
-				Usage:   "Output file to `File`.",
+				Usage:   "Output `file`, Use '-' to output to stdout",
 				Value:   "compile_commands.json",
 			},
-			// &cli.StringFlag{
-			// 	Name:    "build-dir",
-			// 	Aliases: []string{"d"},
-			// 	Usage:   "`Path` to be used as initial build dir.",
-			// },
-			// &cli.StringFlag{
-			// 	Name:    "exclude",
-			// 	Aliases: []string{"e"},
-			// 	Usage:   "Regular expressions to exclude files",
-			// },
+			&cli.StringFlag{
+				Name:    "build-dir",
+				Aliases: []string{"d"},
+				Usage:   "`Path` to be used as initial build dir.",
+			},
+			&cli.StringFlag{
+				Name:    "exclude",
+				Aliases: []string{"e"},
+				Usage:   "Regular expressions to exclude files",
+			},
 			&cli.BoolFlag{
-				Name: "no-build", Aliases: []string{"n"},
+				Name:               "no-build",
+				Aliases:            []string{"n"},
 				Usage:              "Only generates compilation db file",
 				DisableDefaultText: true,
 			},
@@ -95,6 +105,10 @@ COMMANDS:
 				Aliases:            []string{"v"},
 				Usage:              "Print verbose messages.",
 				DisableDefaultText: true,
+				Action: func(*cli.Context, bool) error {
+					log.SetLevel(log.DebugLevel)
+					return nil
+				},
 			},
 			// &cli.BoolFlag{
 			// 	Name:               "overwrite",
@@ -102,18 +116,17 @@ COMMANDS:
 			// 	Usage:              "Overwrite compile_commands.json instead of just updating it.",
 			// 	DisableDefaultText: true,
 			// },
-			// &cli.BoolFlag{
-			// 	Name:               "no-strict",
-			// 	Aliases:            []string{"S"},
-			// 	Usage:              "Do not check if source files exist in the file system.",
-			// 	DisableDefaultText: true,
-			// },
-			// &cli.BoolFlag{
-			// 	Name:               "macros",
-			// 	Aliases:            []string{"m"},
-			// 	Usage:              "Add predefined compiler macros to the compilation database. Make sure that all of the used compilers are in your $PATH.",
-			// 	DisableDefaultText: true,
-			// },
+			&cli.BoolFlag{
+				Name:               "no-strict",
+				Aliases:            []string{"S"},
+				Usage:              "Do not check if source files exist in the file system.",
+				DisableDefaultText: true,
+			},
+			&cli.StringFlag{
+				Name:    "macros",
+				Aliases: []string{"m"},
+				Usage:   "Add predefined compiler macros to the compilation database.",
+			},
 			// &cli.BoolFlag{
 			// 	Name:               "full-path",
 			// 	Usage:              "Write full path to the compiler executable.",

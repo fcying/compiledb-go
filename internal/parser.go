@@ -1,8 +1,6 @@
 package internal
 
 import (
-	"bufio"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,7 +10,6 @@ import (
 )
 
 // Internal variables used to parse build log entries
-// var cc_compile_regex, _ = regexp.Compile(`^.*-?g?cc-?[0-9.]*$|^.*-?clang-?[0-9.]*$`)
 var cc_compile_regex = regexp.MustCompile(`^.*-?gcc-?.*(\.exe)?$|^.*-?clang-?.*(\.exe)?$`)
 var cpp_compile_regex = regexp.MustCompile(`^.*-?[gc]\+\+-?[0-9.]*$|^.*-?clang\+\+-?[0-9.]*(\.exe)$`)
 
@@ -20,72 +17,113 @@ var file_regex = regexp.MustCompile(`^.*-c\s(.*\.(c|cpp|cc|cxx|s))\s|$`)
 var compiler_wrappers []string = []string{"ccache", "icecc", "sccache"}
 
 // Leverage `make --print-directory` option
-var make_enter_dir = regexp.MustCompile(`^\s*make.*?: Entering directory .*$`)
-var make_leave_dir = regexp.MustCompile(`^\s*make.*?: Leaving directory .*$`)
+var make_enter_dir = regexp.MustCompile(`^\s?make.*?: Entering directory .*'(.*)'$`)
+var make_leave_dir = regexp.MustCompile(`^\s?make.*?: Leaving directory .*'(.*)'$`)
 
 // We want to skip such lines from configure to avoid spurious MAKE expansion errors.
-var checking_make = regexp.MustCompile(`^checking whether .* sets \$\(\w+\)\.\.\. (yes|no)$`)
-
-var command_cnt = 0
-var db []interface{}
+var checking_make = regexp.MustCompile(`^\s?checking whether .*(yes|no)$`)
 
 func commandProcess(line string, workingDir string) ([]string, string) {
 	arguments := []string{}
 	filepath := ""
-	log.Println("New command:", line)
 	if cc_compile_regex.MatchString(line) ||
 		cpp_compile_regex.MatchString(line) {
 		arguments = strings.Fields(line)
 		group := file_regex.FindStringSubmatch(line)
 		if group != nil {
 			filepath = group[1]
-			log.Printf("Adding command %d: %s", command_cnt, line)
-			command_cnt += 1
 		}
 	}
 	return arguments, filepath
 }
 
-// func parse_build_log(build_log, proj_dir, exclude_files, command_style=False, add_predefined_macros=False,
-//
-//	use_full_path=False, extra_wrappers=[]){
-func ParseBuildLog(buildLog string, outFileName string, command_style bool, noBuild bool) {
-	log.Println("start parse log")
-
-	file, err := os.OpenFile(buildLog, os.O_RDONLY, 0444)
-	if err != nil {
-		log.Fatalf("open %v failed!", buildLog)
-	}
-	defer file.Close()
-
-	scnner := bufio.NewScanner(file)
-	scnner.Buffer(make([]byte, 1024*1024), 1024*1024*100)
+// TODO exclude_files, add_predefined_macros=False, use_full_path=False, extra_wrappers
+func Parse(buildLog []string) {
+	var (
+		err           error
+		workingDir    string
+		exclude_regex *regexp.Regexp
+	)
 
 	// check workingDir
-	workingDir, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("get workingDir failed! %v", err)
-	}
-	if buildLog != "stdin" {
-		absPath, _ := filepath.Abs(buildLog)
-		workingDir = filepath.Dir(absPath)
+	if ParseConfig.BuildDir != "" {
+		workingDir = ParseConfig.BuildDir
+	} else {
+		workingDir, err = os.Getwd()
+		if err != nil {
+			log.Fatalf("get workingDir failed! %v", err)
+		}
+		if ParseConfig.InputFile != "stdin" {
+			absPath, _ := filepath.Abs(ParseConfig.InputFile)
+			workingDir = filepath.Dir(absPath)
+		}
 	}
 	log.Printf("workingDir: %s", workingDir)
 
-	for scnner.Scan() {
-		line := scnner.Text()
+	dirStack := []string{workingDir}
 
+	//init exclude
+	if ParseConfig.Exclude != "" {
+		exclude_regex, err = regexp.Compile(ParseConfig.Exclude)
+		if err != nil {
+			log.Fatalln("invalid exclude regex:", err)
+		}
+	}
+
+	for _, line := range buildLog {
 		if line == "" {
 			continue
 		}
+		line = strings.TrimSpace(line)
+		log.Println("New command:", line)
 
-		// TODO Parse directory that make entering/leaving
+		// Parse directory that make entering/leaving
+		if make_enter_dir.MatchString(line) {
+			group := make_enter_dir.FindStringSubmatch(line)
+			if group != nil {
+				dirStack = append([]string{group[1]}, dirStack...)
+				workingDir = dirStack[0]
+				log.Printf("change workingDir: %s", workingDir)
+			}
+			continue
+		} else if make_leave_dir.MatchString(line) {
+			if len(dirStack) > 0 {
+				dirStack = dirStack[1:]
+				if len(dirStack) > 0 {
+					workingDir = dirStack[0]
+				}
+				log.Printf("change workingDir: %s", workingDir)
+			}
+			continue
+		}
+
+		if checking_make.MatchString(line) {
+			continue
+		}
 
 		// Parse command
 		arguments, filepath := commandProcess(line, workingDir)
 		command := ""
 		if filepath != "" {
-			if command_style {
+			if ParseConfig.NoStrict == false {
+				if FileExist(filepath) == false {
+					log.Printf("file %s not exist", filepath)
+					continue
+				}
+			}
+
+			if ParseConfig.Exclude != "" {
+				if exclude_regex.MatchString(filepath) {
+					log.Printf("file %s exclude", filepath)
+					continue
+				}
+			}
+
+			if ParseConfig.Macros != "" {
+				arguments = append(arguments, strings.Fields(ParseConfig.Macros)...)
+			}
+
+			if ParseConfig.CommandStyle {
 				command = strings.Join(arguments, " ")
 				data := struct {
 					Directory string `json:"directory"`
@@ -96,7 +134,7 @@ func ParseBuildLog(buildLog string, outFileName string, command_style bool, noBu
 					Command:   command,
 					File:      filepath,
 				}
-				db = append(db, data)
+				ParseResult = append(ParseResult, data)
 			} else {
 				data := struct {
 					Directory string   `json:"directory"`
@@ -107,27 +145,12 @@ func ParseBuildLog(buildLog string, outFileName string, command_style bool, noBu
 					Arguments: arguments,
 					File:      filepath,
 				}
-				db = append(db, data)
+				ParseResult = append(ParseResult, data)
 			}
-
-			// format
-			jsonData, err := json.MarshalIndent(db, "", "  ")
-			if err != nil {
-				log.Fatalf("Error encoding JSON:%v", err)
-			}
-
-			// write file
-			filename := outFileName
-			outfile, err := os.Create(filename)
-			if err != nil {
-				log.Fatalf("create %v failed! err:%v", filename, err)
-			}
-			defer outfile.Close()
-
-			_, err = outfile.Write(jsonData)
-			if err != nil {
-				log.Fatalf("write %v failed! err:%v", filename, err)
-			}
+			log.Printf("Adding command %d: %s", CommandCnt, line)
+			CommandCnt += 1
 		}
 	}
+
+	WriteJSON(ParseConfig.OutputFile)
 }
