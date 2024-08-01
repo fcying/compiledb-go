@@ -108,7 +108,7 @@ func Generate() {
 	)
 	defer file.Close()
 
-	if ParseConfig.InputFile == "" {
+	if ParseConfig.InputFile != "" {
 		file, err = os.OpenFile(ParseConfig.InputFile, os.O_RDONLY, 0444)
 		if err != nil {
 			log.Fatalf("open %v failed!", ParseConfig.InputFile)

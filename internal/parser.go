@@ -10,10 +10,10 @@ import (
 )
 
 // Internal variables used to parse build log entries
-var cc_compile_regex = regexp.MustCompile(`^.*-?gcc-?.*(\.exe)?$|^.*-?clang-?.*(\.exe)?$`)
-var cpp_compile_regex = regexp.MustCompile(`^.*-?[gc]\+\+-?[0-9.]*$|^.*-?clang\+\+-?[0-9.]*(\.exe)$`)
+var cc_compile_regex = regexp.MustCompile(`^.*-?(gcc|clang)-?.*(\.exe)?$`)
+var cpp_compile_regex = regexp.MustCompile(`^.*-?([gc]|clang)\+\+-?.*(\.exe)?$`)
 
-var file_regex = regexp.MustCompile(`^.*-c\s(.*\.(c|cpp|cc|cxx|s))\s|$`)
+var file_regex = regexp.MustCompile(`^.*-c\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`)
 var compiler_wrappers []string = []string{"ccache", "icecc", "sccache"}
 
 // Leverage `make --print-directory` option
@@ -37,7 +37,7 @@ func commandProcess(line string, workingDir string) ([]string, string) {
 	return arguments, filepath
 }
 
-// TODO exclude_files, add_predefined_macros=False, use_full_path=False, extra_wrappers
+// TODO use_full_path=False, extra_wrappers
 func Parse(buildLog []string) {
 	var (
 		err           error

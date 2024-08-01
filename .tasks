@@ -1,7 +1,8 @@
 [build]
 # command=go run ./cmd/compiledb/main.go -v
-# command=go run ./cmd/compiledb/main.go -v -p ./tests/build.log
-command=go run ./cmd/compiledb/main.go -v -p ./tests/build.log make
+command=go run ./cmd/compiledb/main.go -v -S -p ./tests/build.log
+output=terminal
 
 [release]
 command=go build ./cmd/compiledb && go install ./cmd/compiledb
+output=terminal
