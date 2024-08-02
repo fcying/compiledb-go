@@ -145,14 +145,16 @@ COMMANDS:
 				DisableDefaultText: true,
 			},
 			&cli.StringFlag{
-				Name:  "regex-compile",
-				Usage: "Regular expressions to find compile",
-				Value: `^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`,
+				Name:        "regex-compile",
+				Usage:       "Regular expressions to find compile",
+				Value:       internal.RegexCompile,
+				DefaultText: internal.RegexCompile,
 			},
 			&cli.StringFlag{
-				Name:  "regex-file",
-				Usage: "Regular expressions to find file",
-				Value: `^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`,
+				Name:        "regex-file",
+				Usage:       "Regular expressions to find file",
+				Value:       internal.RegexFile,
+				DefaultText: internal.RegexFile,
 			},
 		},
 	}

@@ -9,6 +9,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+var RegexCompile string = `^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`
+var RegexFile string = `^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`
+
 // Internal variables used to parse build log entries
 var sh_regex = regexp.MustCompile(`^.*(;|&&|&|\|)`)
 var compile_regex *regexp.Regexp
