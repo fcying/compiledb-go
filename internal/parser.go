@@ -10,10 +10,10 @@ import (
 )
 
 // Internal variables used to parse build log entries
-var cc_compile_regex = regexp.MustCompile(`^.*-?(gcc|clang)-?.*(\.exe)?$`)
-var cpp_compile_regex = regexp.MustCompile(`^.*-?([gc]|clang)\+\+-?.*(\.exe)?$`)
+var compile_regex = regexp.MustCompile(`^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`)
+var sh_regex = regexp.MustCompile(`^.*(;|&&|&|\|)`)
 
-var file_regex = regexp.MustCompile(`^.*-c\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`)
+var file_regex = regexp.MustCompile(`^.*-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`)
 var compiler_wrappers []string = []string{"ccache", "icecc", "sccache"}
 
 // Leverage `make --print-directory` option
@@ -26,9 +26,24 @@ var checking_make = regexp.MustCompile(`^\s?checking whether .*(yes|no)$`)
 func commandProcess(line string, workingDir string) ([]string, string) {
 	arguments := []string{}
 	filepath := ""
-	if cc_compile_regex.MatchString(line) ||
-		cpp_compile_regex.MatchString(line) {
+	if compile_regex.MatchString(line) {
+		// not escape \", json.MarshalIndent will do it
+		line = strings.ReplaceAll(line, `\"`, `"`)
+
 		arguments = strings.Fields(line)
+
+		// check compile word
+		for i, word := range arguments {
+			if compile_regex.MatchString(word) {
+				arguments = arguments[i:]
+				index := sh_regex.FindStringIndex(word)
+				if index != nil {
+					arguments[0] = word[index[1]:]
+				}
+				break
+			}
+		}
+
 		group := file_regex.FindStringSubmatch(line)
 		if group != nil {
 			filepath = group[1]
@@ -73,7 +88,7 @@ func Parse(buildLog []string) {
 			continue
 		}
 		line = strings.TrimSpace(line)
-		log.Println("New command:", line)
+		log.Debug("New command:", line)
 
 		// Parse directory that make entering/leaving
 		if make_enter_dir.MatchString(line) {
@@ -101,12 +116,12 @@ func Parse(buildLog []string) {
 
 		// Parse command
 		arguments, filepath := commandProcess(line, workingDir)
-		command := ""
 		compileFullPath := ""
 		if filepath != "" {
 			if ParseConfig.NoStrict == false {
-				if FileExist(filepath) == false {
-					log.Printf("file %s not exist", filepath)
+				fileFullPath := workingDir + "/" + filepath
+				if FileExist(fileFullPath) == false {
+					log.Printf("file %s not exist", fileFullPath)
 					continue
 				}
 			}
@@ -130,8 +145,8 @@ func Parse(buildLog []string) {
 				arguments = append(arguments, strings.Fields(ParseConfig.Macros)...)
 			}
 
+			command := strings.Join(arguments, " ")
 			if ParseConfig.CommandStyle {
-				command = strings.Join(arguments, " ")
 				data := struct {
 					Directory string `json:"directory"`
 					Command   string `json:"command"`
@@ -154,7 +169,7 @@ func Parse(buildLog []string) {
 				}
 				ParseResult = append(ParseResult, data)
 			}
-			log.Printf("Adding command %d: %s", CommandCnt, line)
+			log.Printf("Adding command %d: %s", CommandCnt, command)
 			CommandCnt += 1
 		}
 	}

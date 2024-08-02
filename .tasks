@@ -1,6 +1,6 @@
 [build]
 # command=go run ./cmd/compiledb/main.go -v
-command=go run ./cmd/compiledb/main.go -v -c -S --full-path -p ./tests/build.log
+command=go run ./cmd/compiledb/main.go -v -c -S --full-path < ./tests/build.log
 output=terminal
 
 [release]

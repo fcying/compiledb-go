@@ -1,14 +1,16 @@
 # Compilation Database Generator
 
 rewrite [nickdiego/compiledb](https://github.com/nickdiego/compiledb) in Go for speed.  
-test using a build_log file over 2MB in size with over 200 valid entries
+test using a build log over 2MB size and over 200 valid entries
 ```
+# make -Bnkw > build.log
+
 compiledb-go
-# time ~/go/bin/compiledb -n make
+# time ~/go/bin/compiledb -p build.log
 ~/go/bin/compiledb -n make  0.21s user 0.02s system 106% cpu 0.210 total
 
 compiledb-python
-# time ~/.local/bin/compiledb -n make
+# time ~/.local/bin/compiledb -p build.log
 ~/.local/bin/compiledb -n make  5.21s user 0.01s system 100% cpu 5.179 total
 ```
 

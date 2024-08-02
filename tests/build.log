@@ -1,15 +1,16 @@
 make: Entering directory 'out/test'
 
-clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz -mllvm -pi32v2-large-program=true -w  -I../include  -MM -MT objs/main1.c.o main1.c -o objs/main1.c.d
+clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -MM -MT objs/main1.c.o main1.c -o objs/main1.c.d
 
-clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz -mllvm -pi32v2-large-program=true -w  -I../include  -c main1.c -o objs/main1.c.o
+clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -c main1.c -o objs/main1.c.o
 
-clang.exe -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz -mllvm -pi32v2-large-program=true -w  -I../include  -c main2.cc -o objs/main2.cc.o
+clang.exe -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -c main2.cc -o objs/main2.cc.o
 
-gcc -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz -mllvm -pi32v2-large-program=true -w  -I../include  -c main3.c -o objs/main3.c.o
+gcc -target pi32v2 -mcpu=r3 -c  -Wno-invalid-noreturn -Oz  -I../include main3.c -o objs/main3.c.o
 
 g++ -c test1.cpp
-c++ -c test2.cpp
-ccache-clang-11++ -c test3.cpp
+ccache-clang-11++ -c test2.cpp
+
+printf 't' 1>&2;cc -c -DINC=\"t.h\" test3.c
 
 make: Leaving directory 'out/test'
