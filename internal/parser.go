@@ -13,7 +13,7 @@ import (
 var compile_regex = regexp.MustCompile(`^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`)
 var sh_regex = regexp.MustCompile(`^.*(;|&&|&|\|)`)
 
-var file_regex = regexp.MustCompile(`^.*-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`)
+var file_regex = regexp.MustCompile(`^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`)
 var compiler_wrappers []string = []string{"ccache", "icecc", "sccache"}
 
 // Leverage `make --print-directory` option

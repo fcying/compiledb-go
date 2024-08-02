@@ -7,11 +7,11 @@ test using a build log over 2MB size and over 200 valid entries
 
 compiledb-go
 # time ~/go/bin/compiledb -p build.log
-~/go/bin/compiledb -n make  0.21s user 0.02s system 106% cpu 0.210 total
+~/go/bin/compiledb -p build.log  0.21s user 0.02s system 106% cpu 0.210 total
 
 compiledb-python
 # time ~/.local/bin/compiledb -p build.log
-~/.local/bin/compiledb -n make  5.21s user 0.01s system 100% cpu 5.179 total
+~/.local/bin/compiledb -p build.log  5.21s user 0.01s system 100% cpu 5.179 total
 ```
 
 Tool for generating [Clang's JSON Compilation Database][compdb] file for GNU

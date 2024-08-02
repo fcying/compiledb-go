@@ -1,6 +1,6 @@
 make: Entering directory 'out/test'
 
-clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -MM -MT objs/main1.c.o main1.c -o objs/main1.c.d
+clang -fno-common -MM -MT objs/main1.c.o main1.c -o objs/main1.c.d
 
 clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -c main1.c -o objs/main1.c.o
 
