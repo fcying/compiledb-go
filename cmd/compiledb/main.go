@@ -9,7 +9,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.2.1"
+var Version string = "v1.3.0"
 
 func init() {
 	log.SetOutput(os.Stdout)
@@ -23,6 +23,8 @@ func updateConfig(ctx *cli.Context) {
 	internal.ParseConfig.BuildDir = ctx.String("build-dir")
 	internal.ParseConfig.Exclude = ctx.String("exclude")
 	internal.ParseConfig.Macros = ctx.String("macros")
+	internal.ParseConfig.RegexCompile = ctx.String("regex-compile")
+	internal.ParseConfig.RegexFile = ctx.String("regex-file")
 	internal.ParseConfig.NoBuild = ctx.Bool("no-build")
 	internal.ParseConfig.CommandStyle = ctx.Bool("command-style")
 	internal.ParseConfig.NoStrict = ctx.Bool("no-strict")
@@ -132,15 +134,25 @@ COMMANDS:
 				Usage:   "Add predefined compiler macros to the compilation database.",
 			},
 			&cli.BoolFlag{
-				Name:               "full-path",
-				Usage:              "Write full path to the compiler executable.",
-				DisableDefaultText: true,
-			},
-			&cli.BoolFlag{
 				Name:               "command-style",
 				Aliases:            []string{"c"},
 				Usage:              `Output compilation database with single "command" string rather than the default "arguments" list of strings.`,
 				DisableDefaultText: true,
+			},
+			&cli.BoolFlag{
+				Name:               "full-path",
+				Usage:              "Write full path to the compiler executable.",
+				DisableDefaultText: true,
+			},
+			&cli.StringFlag{
+				Name:  "regex-compile",
+				Usage: "Regular expressions to find compile",
+				Value: `^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`,
+			},
+			&cli.StringFlag{
+				Name:  "regex-file",
+				Usage: "Regular expressions to find file",
+				Value: `^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`,
 			},
 		},
 	}

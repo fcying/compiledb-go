@@ -18,6 +18,8 @@ type Config struct {
 	BuildDir     string
 	Exclude      string
 	Macros       string
+	RegexCompile string
+	RegexFile    string
 	CommandStyle bool
 	FullPath     bool
 	NoBuild      bool

@@ -52,8 +52,10 @@ OPTIONS:
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
    --macros value, -m value   Add predefined compiler macros to the compilation database.
-   --full-path                Write full path to the compiler executable.
    --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
+   --full-path                Write full path to the compiler executable.
+   --regex-compile value      Regular expressions to find compile (default: "^.*-?(gcc|clang|cc|g\\+\\+|c\\+\\+|clang\\+\\+)-?.*(\\.exe)?")
+   --regex-file value         Regular expressions to find file (default: "^.*\\s-c.*\\s(.*\\.(c|cpp|cc|cxx|c\\+\\+|s|m|mm|cu))(\\s.*$|$)")
    --help, -h                 show help
    
 COMMANDS:

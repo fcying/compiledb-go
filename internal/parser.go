@@ -10,11 +10,9 @@ import (
 )
 
 // Internal variables used to parse build log entries
-var compile_regex = regexp.MustCompile(`^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`)
 var sh_regex = regexp.MustCompile(`^.*(;|&&|&|\|)`)
-
-var file_regex = regexp.MustCompile(`^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`)
-var compiler_wrappers []string = []string{"ccache", "icecc", "sccache"}
+var compile_regex *regexp.Regexp
+var file_regex *regexp.Regexp
 
 // Leverage `make --print-directory` option
 var make_enter_dir = regexp.MustCompile(`^\s?make.*?: Entering directory .*'(.*)'$`)
@@ -33,8 +31,10 @@ func commandProcess(line string, workingDir string) ([]string, string) {
 		arguments = strings.Fields(line)
 
 		// check compile word
+		findCompile := false
 		for i, word := range arguments {
 			if compile_regex.MatchString(word) {
+				findCompile = true
 				arguments = arguments[i:]
 				index := sh_regex.FindStringIndex(word)
 				if index != nil {
@@ -43,10 +43,17 @@ func commandProcess(line string, workingDir string) ([]string, string) {
 				break
 			}
 		}
+		if findCompile == false {
+			return nil, ""
+		}
 
 		group := file_regex.FindStringSubmatch(line)
 		if group != nil {
-			filepath = group[1]
+			if len(group) > 1 {
+				filepath = group[1]
+			} else {
+				log.Fatalln("invalid file_regex")
+			}
 		}
 	}
 	return arguments, filepath
@@ -75,12 +82,20 @@ func Parse(buildLog []string) {
 
 	dirStack := []string{workingDir}
 
-	//init exclude
+	//init regex
 	if ParseConfig.Exclude != "" {
 		exclude_regex, err = regexp.Compile(ParseConfig.Exclude)
 		if err != nil {
 			log.Fatalln("invalid exclude regex:", err)
 		}
+	}
+	compile_regex, err = regexp.Compile(ParseConfig.RegexCompile)
+	if err != nil {
+		log.Fatalln("invalid compile_regex:", err)
+	}
+	file_regex, err = regexp.Compile(ParseConfig.RegexFile)
+	if err != nil {
+		log.Fatalln("invalid file_regex:", err)
 	}
 
 	for _, line := range buildLog {
