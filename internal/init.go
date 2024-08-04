@@ -26,19 +26,15 @@ type Config struct {
 	NoStrict     bool
 }
 
-var (
-	CommandCnt  = 0
-	ParseConfig Config
-	ParseResult []interface{}
-)
+var ParseConfig Config
 
-func WriteJSON(filename string) {
-	if CommandCnt == 0 {
+func WriteJSON(filename string, cmdCnt int, data *[]Command) {
+	if cmdCnt == 0 {
 		return
 	}
 
 	// format
-	jsonData, err := json.MarshalIndent(ParseResult, "", "  ")
+	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		log.Fatalf("Error encoding JSON:%v", err)
 	}
@@ -57,7 +53,7 @@ func WriteJSON(filename string) {
 		if err != nil {
 			log.Fatalf("write %v failed! err:%v", filename, err)
 		}
-		log.Printf("write %d entries to %s", CommandCnt, filename)
+		log.Printf("write %d entries to %s", cmdCnt, filename)
 	}
 }
 

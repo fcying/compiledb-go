@@ -9,6 +9,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type Command struct {
+	Directory string   `json:"directory"`
+	Command   string   `json:"command,omitempty"`
+	Arguments []string `json:"arguments,omitempty"`
+	File      string   `json:"file"`
+}
+
 var RegexCompile string = `^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`
 var RegexFile string = `^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`
 
@@ -67,6 +74,8 @@ func Parse(buildLog []string) {
 		err           error
 		workingDir    string
 		exclude_regex *regexp.Regexp
+		cmdCnt        = 0
+		result        []Command
 	)
 
 	// check workingDir
@@ -165,32 +174,22 @@ func Parse(buildLog []string) {
 
 			command := strings.Join(arguments, " ")
 			if ParseConfig.CommandStyle {
-				data := struct {
-					Directory string `json:"directory"`
-					Command   string `json:"command"`
-					File      string `json:"file"`
-				}{
+				result = append(result, Command{
 					Directory: workingDir,
 					Command:   command,
 					File:      filepath,
-				}
-				ParseResult = append(ParseResult, data)
+				})
 			} else {
-				data := struct {
-					Directory string   `json:"directory"`
-					Arguments []string `json:"arguments"`
-					File      string   `json:"file"`
-				}{
+				result = append(result, Command{
 					Directory: workingDir,
 					Arguments: arguments,
 					File:      filepath,
-				}
-				ParseResult = append(ParseResult, data)
+				})
 			}
-			log.Printf("Adding command %d: %s", CommandCnt, command)
-			CommandCnt += 1
+			log.Printf("Adding command %d: %s", cmdCnt, command)
+			cmdCnt += 1
 		}
 	}
 
-	WriteJSON(ParseConfig.OutputFile)
+	WriteJSON(ParseConfig.OutputFile, cmdCnt, &result)
 }
