@@ -67,6 +67,12 @@ jobs:
 
           ls -la $out
 
+      - uses: actions/upload-artifact@v3
+        with:
+          name: bin
+          path: build/*
+          retention-days: 90
+
       - name: Release
         if: ${{ env.VERSION != '' }}
         uses: ncipollo/release-action@v1

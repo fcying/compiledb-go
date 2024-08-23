@@ -13,4 +13,7 @@ ccache-clang-11++ -c test2.cpp
 
 printf 't' 1>&2;cc -c -DINC=\"t.h\" test3.c
 
+gcc -c /opt/fullpath.c -o objs/fullpath.c.o
+
+
 make: Leaving directory 'out/test'

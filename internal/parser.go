@@ -142,11 +142,14 @@ func Parse(buildLog []string) {
 		}
 
 		// Parse command
-		arguments, filepath := commandProcess(line, workingDir)
+		arguments, filePath := commandProcess(line, workingDir)
 		compileFullPath := ""
-		if filepath != "" {
+		if filePath != "" {
 			if ParseConfig.NoStrict == false {
-				fileFullPath := workingDir + "/" + filepath
+				fileFullPath := filePath
+				if IsAbsPath(filePath) == false {
+					fileFullPath = workingDir + "/" + filePath
+				}
 				if FileExist(fileFullPath) == false {
 					log.Printf("file %s not exist", fileFullPath)
 					continue
@@ -154,8 +157,8 @@ func Parse(buildLog []string) {
 			}
 
 			if ParseConfig.Exclude != "" {
-				if exclude_regex.MatchString(filepath) {
-					log.Printf("file %s exclude", filepath)
+				if exclude_regex.MatchString(filePath) {
+					log.Printf("file %s exclude", filePath)
 					continue
 				}
 			}
@@ -177,13 +180,13 @@ func Parse(buildLog []string) {
 				result = append(result, Command{
 					Directory: workingDir,
 					Command:   command,
-					File:      filepath,
+					File:      filePath,
 				})
 			} else {
 				result = append(result, Command{
 					Directory: workingDir,
 					Arguments: arguments,
-					File:      filepath,
+					File:      filePath,
 				})
 			}
 			log.Printf("Adding command %d: %s", cmdCnt, command)

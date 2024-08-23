@@ -32,3 +32,13 @@ func ConvertLinuxPath(path string) string {
 
 	return linuxPath
 }
+
+func IsAbsPath(path string) bool {
+	if strings.HasPrefix(path, "/") {
+		return true
+	}
+	if strings.HasPrefix(path, "\\") || (len(path) > 1 && path[1] == ':') {
+		return true
+	}
+	return false
+}
