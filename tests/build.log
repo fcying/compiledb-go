@@ -1,21 +1,24 @@
-make: Entering directory 'out/test"
+make: Entering directory '/opt/compiledb_test/src"
 
-clang -fno-common -MM -MT objs/main1.c.o main1.c -o objs/main1.c.d
+clang -fno-common -MM -MT objs/test1.c.o test1.c -o objs/test1.c.d
 
-clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -c main1.c -o objs/main1.c.o
+clang -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -c test2.c -o objs/test2.c.o
 
-clang.exe -target pi32v2 -mcpu=r3 -Wno-invalid-noreturn -Oz  -I../include  -c main2.cc -o objs/main2.cc.o
+gcc -target pi32v2 -mcpu=r3 -c  -Wno-invalid-noreturn -Oz  -I../include test3.c -o objs/test3.c.o
 
-gcc -target pi32v2 -mcpu=r3 -c  -Wno-invalid-noreturn -Oz  -I../include main3.c -o objs/main3.c.o
+clang.exe -I../include  -c test2.cc -o objs/test1.cc.o
 
 g++ -c test1.cpp
 ccache-clang-11++ -c test2.cpp
 
-printf 't' 1>&2;cc -c -DINC=\"t.h\" test3.c
+g++ -c test0.c
 
-gcc -c /opt/fullpath.c -o objs/fullpath.c.o
+printf 't' 1>&2;cc -c -DINC=\"t.h\" test4.c
 
+gcc -c /opt/compiledb_test/fullpath.c -o objs/fullpath.c.o
 
-make: Leaving directory 'out/test'
+make: Leaving directory '/opt/compiledb_test/src'
 
-make[1]: Entering directory `/home/test/src/algorithm"
+make[1]: Entering directory `/opt/compiledb_test/src2"
+
+gcc -c ../fullpath.c
