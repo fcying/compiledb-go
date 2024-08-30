@@ -30,7 +30,7 @@ func updateConfig(ctx *cli.Context) {
 	internal.ParseConfig.NoStrict = ctx.Bool("no-strict")
 	internal.ParseConfig.FullPath = ctx.Bool("full-path")
 
-	log.Println(internal.ParseConfig)
+	log.Debugf("Options: %+v", internal.ParseConfig)
 }
 
 func main() {
@@ -61,7 +61,7 @@ COMMANDS:
 		Action: func(ctx *cli.Context) error {
 			updateConfig(ctx)
 			internal.Generate()
-			log.Println("Done")
+			log.Debugf("Done")
 			return nil
 		},
 		Commands: []*cli.Command{
@@ -112,7 +112,7 @@ COMMANDS:
 				DisableDefaultText: true,
 				Action: func(*cli.Context, bool) error {
 					log.SetLevel(log.DebugLevel)
-					log.Println("compiledb-go start, version:", Version)
+					log.Info("compiledb-go start, version:", Version)
 					return nil
 				},
 			},

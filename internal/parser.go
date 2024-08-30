@@ -25,7 +25,7 @@ var compile_regex *regexp.Regexp
 var file_regex *regexp.Regexp
 
 // Leverage `make --print-directory` option
-var make_enter_dir = regexp.MustCompile(`^\s?make.*?: Entering directory .*['"` + "`" + `](.*)['"` + "`" + `]$`)
+var make_enter_dir = regexp.MustCompile("^\\s?make.*?: Entering directory .*['`\"](.*)['`\"]$")
 var make_leave_dir = regexp.MustCompile(`^\s?make.*?: Leaving directory .*'(.*)'$`)
 
 // We want to skip such lines from configure to avoid spurious MAKE expansion errors.
@@ -90,7 +90,7 @@ func Parse(buildLog []string) {
 		}
 	}
 	workingDir = ConvertLinuxPath(workingDir)
-	log.Printf("workingDir: %s", workingDir)
+	log.Infof("workingDir: %s", workingDir)
 
 	dirStack := []string{workingDir}
 
@@ -123,7 +123,7 @@ func Parse(buildLog []string) {
 			if group != nil {
 				dirStack = append([]string{ConvertLinuxPath(group[1])}, dirStack...)
 				workingDir = dirStack[0]
-				log.Printf("change workingDir: %s", workingDir)
+				log.Infof("change workingDir: %s", workingDir)
 			}
 			continue
 		} else if make_leave_dir.MatchString(line) {
@@ -132,7 +132,7 @@ func Parse(buildLog []string) {
 				if len(dirStack) > 0 {
 					workingDir = dirStack[0]
 				}
-				log.Printf("change workingDir: %s", workingDir)
+				log.Infof("change workingDir: %s", workingDir)
 			}
 			continue
 		}
@@ -151,14 +151,14 @@ func Parse(buildLog []string) {
 					fileFullPath = workingDir + "/" + filePath
 				}
 				if FileExist(fileFullPath) == false {
-					log.Printf("file %s not exist", fileFullPath)
+					log.Warnf("file %s not exist", fileFullPath)
 					continue
 				}
 			}
 
 			if ParseConfig.Exclude != "" {
 				if exclude_regex.MatchString(filePath) {
-					log.Printf("file %s exclude", filePath)
+					log.Infof("file %s exclude", filePath)
 					continue
 				}
 			}
@@ -189,7 +189,7 @@ func Parse(buildLog []string) {
 					File:      filePath,
 				})
 			}
-			log.Printf("Adding command %d: %s", cmdCnt, command)
+			log.Infof("Adding command %d: %s", cmdCnt, command)
 			cmdCnt += 1
 		}
 	}

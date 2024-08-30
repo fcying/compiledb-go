@@ -53,7 +53,7 @@ func WriteJSON(filename string, cmdCnt int, data *[]Command) {
 		if err != nil {
 			log.Fatalf("write %v failed! err:%v", filename, err)
 		}
-		log.Printf("write %d entries to %s", cmdCnt, filename)
+		log.Infof("write %d entries to %s", cmdCnt, filename)
 	}
 }
 
@@ -114,10 +114,10 @@ func Generate() {
 			log.Fatalf("open %v failed!", ParseConfig.InputFile)
 		}
 		scnner = bufio.NewScanner(file)
-		log.Println("Build from file")
+		log.Debugf("Build from file")
 	} else {
 		scnner = bufio.NewScanner(os.Stdin)
-		log.Println("Build from stdin")
+		log.Debugf("Build from stdin")
 	}
 
 	scnner.Buffer(make([]byte, 1024*1024), 1024*1024*100)
