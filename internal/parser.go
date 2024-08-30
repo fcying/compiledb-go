@@ -25,7 +25,7 @@ var compile_regex *regexp.Regexp
 var file_regex *regexp.Regexp
 
 // Leverage `make --print-directory` option
-var make_enter_dir = regexp.MustCompile(`^\s?make.*?: Entering directory .*'(.*)'$`)
+var make_enter_dir = regexp.MustCompile(`^\s?make.*?: Entering directory .*['"` + "`" + `](.*)['"` + "`" + `]$`)
 var make_leave_dir = regexp.MustCompile(`^\s?make.*?: Leaving directory .*'(.*)'$`)
 
 // We want to skip such lines from configure to avoid spurious MAKE expansion errors.

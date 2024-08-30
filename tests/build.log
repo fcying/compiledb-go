@@ -1,4 +1,4 @@
-make: Entering directory 'out/test'
+make: Entering directory 'out/test"
 
 clang -fno-common -MM -MT objs/main1.c.o main1.c -o objs/main1.c.d
 
@@ -17,3 +17,5 @@ gcc -c /opt/fullpath.c -o objs/fullpath.c.o
 
 
 make: Leaving directory 'out/test'
+
+make[1]: Entering directory `/home/test/src/algorithm"
