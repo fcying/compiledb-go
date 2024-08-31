@@ -9,7 +9,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.3.2"
+var Version string = "v1.3.3"
 
 func init() {
 	log.SetOutput(os.Stdout)
