@@ -60,13 +60,6 @@ func WriteJSON(filename string, cmdCnt int, data *[]Command) {
 func MakeWrap(args []string) {
 	var wg sync.WaitGroup
 
-	if ParseConfig.BuildDir != "" {
-		err := os.Chdir(ParseConfig.BuildDir)
-		if err != nil {
-			log.Error(err)
-		}
-	}
-
 	wg.Add(1)
 	go func() {
 		// append log

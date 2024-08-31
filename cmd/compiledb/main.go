@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/fcying/compiledb-go/internal"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.3.3"
+var Version string = "v1.3.4"
 
 func init() {
 	log.SetOutput(os.Stdout)
@@ -18,8 +19,8 @@ func init() {
 }
 
 func updateConfig(ctx *cli.Context) {
+	outputFile := ctx.String("output")
 	internal.ParseConfig.InputFile = ctx.String("parse")
-	internal.ParseConfig.OutputFile = ctx.String("output")
 	internal.ParseConfig.BuildDir = ctx.String("build-dir")
 	internal.ParseConfig.Exclude = ctx.String("exclude")
 	internal.ParseConfig.Macros = ctx.String("macros")
@@ -29,6 +30,19 @@ func updateConfig(ctx *cli.Context) {
 	internal.ParseConfig.CommandStyle = ctx.Bool("command-style")
 	internal.ParseConfig.NoStrict = ctx.Bool("no-strict")
 	internal.ParseConfig.FullPath = ctx.Bool("full-path")
+
+	if internal.IsAbsPath(outputFile) == false {
+		cwd, _ := os.Getwd()
+		outputFile = filepath.Join(cwd, outputFile)
+	}
+	internal.ParseConfig.OutputFile = outputFile
+
+	if internal.ParseConfig.BuildDir != "" {
+		err := os.Chdir(internal.ParseConfig.BuildDir)
+		if err != nil {
+			log.Error(err)
+		}
+	}
 
 	log.Debugf("Options: %+v", internal.ParseConfig)
 }

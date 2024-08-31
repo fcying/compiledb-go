@@ -47,8 +47,8 @@ OPTIONS:
    --parse file, -p file      Build log file to parse compilation commands. (default: "stdin")
    --output file, -o file     Output file, Use '-' to output to stdout (default: "compile_commands.json")
    --build-dir Path, -d Path  Path to be used as initial build dir.
-   --exclude value, -e value  Regular expressions to exclude files
-   --no-build, -n             Only generates compilation db file
+   --exclude value, -e value  Regular expressions to exclude files.
+   --no-build, -n             Only generates compilation db file.
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
    --macros value, -m value   Add predefined compiler macros to the compilation database.
