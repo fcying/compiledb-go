@@ -16,6 +16,8 @@ jobs:
       contents: write
     env:
       VERSION: ""
+      COMMIT: ""
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,10 +33,14 @@ jobs:
           version=""
           new_ver=$(grep -Po "v\d+\.\d+\.\d+" cmd/compiledb/main.go)
           cur_ver=$(git describe --abbrev=0 --tags)
+          commit=$(git rev-parse --short HEAD)
           if [ "$new_ver" != "$cur_ver" ]; then
             version=$new_ver
+          else
+            sed -E "s|v[0-9]+\.[0-9]+\.[0-9]+|test version($commit)|" cmd/compiledb/main.go -i
           fi
           echo "VERSION=$version" >> $GITHUB_ENV
+          echo "COMMIT=$commit" >> $GITHUB_ENV
 
       - name: Install dependencies
         run: go mod tidy
@@ -46,31 +52,41 @@ jobs:
 
           cd ./cmd/compiledb
 
+          echo "Build linux-amd64 version"
           GOOS=linux GOARCH=amd64 go build
           chmod +x compiledb 
+          ./compiledb -h | head -1 || true
           tar cJvf compiledb.txz compiledb
           mv compiledb.txz $out/compiledb-linux-amd64.txz
 
+          echo "Build linux-arm64 version"
           GOOS=linux GOARCH=arm64 go build
           chmod +x compiledb 
           tar cJvf compiledb.txz compiledb
           mv compiledb.txz $out/compiledb-linux-arm64.txz
 
+          echo "Build windows-amd64 version"
           GOOS=windows GOARCH=amd64 go build
           7z a compiledb.7z compiledb.exe
           mv compiledb.7z $out/compiledb-windows-amd64.7z
 
+          echo "Build darwin-arm64 version"
           GOOS=darwin GOARCH=arm64 go build
           chmod +x compiledb 
           tar cJvf compiledb.txz compiledb
           mv compiledb.txz $out/compiledb-darwin-arm64.txz
 
+          gh release delete test --cleanup-tag -y || true
           ls -la $out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bin
-          path: build/*
+          name: compiledb-linux-amd64
+          path: build/compiledb-linux-amd64.txz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiledb-windows-amd64
+          path: build/compiledb-windows-amd64.7z
 
       - name: Release
         if: ${{ env.VERSION != '' }}
@@ -80,4 +96,15 @@ jobs:
           allowUpdates: true
           artifactErrorsFailBuild: true
           generateReleaseNotes: true
+          artifacts: "build/*"
+
+      - name: Update latest
+        uses: ncipollo/release-action@v1
+        with:
+          tag: test
+          artifactErrorsFailBuild: true
+          generateReleaseNotes: true
+          name: test version ${{ env.COMMIT }}
+          prerelease: true
+          draft: true
           artifacts: "build/*"
