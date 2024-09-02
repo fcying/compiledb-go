@@ -27,6 +27,7 @@ type Config struct {
 }
 
 var ParseConfig Config
+var StatusCode int = 0
 
 func WriteJSON(filename string, cmdCnt int, data *[]Command) {
 	if cmdCnt == 0 {
@@ -93,7 +94,13 @@ func MakeWrap(args []string) {
 		cmd := exec.Command("make", args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		cmd.Run()
+		err := cmd.Run()
+		if err != nil {
+			if exitError, ok := err.(*exec.ExitError); ok {
+				StatusCode = exitError.ExitCode()
+				log.Errorf("make failed! errorCode: %d", StatusCode)
+			}
+		}
 	}
 
 	wg.Wait()

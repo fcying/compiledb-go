@@ -10,7 +10,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.3.4"
+var Version string = "v1.3.5"
 
 func init() {
 	log.SetOutput(os.Stdout)
@@ -175,5 +175,9 @@ COMMANDS:
 
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
+	}
+
+	if internal.StatusCode != 0 {
+		os.Exit(internal.StatusCode)
 	}
 }

@@ -4,5 +4,5 @@ command=go run ./cmd/compiledb/main.go -v -c --full-path < ./tests/build.log
 output=terminal
 
 [release]
-command=go build ./cmd/compiledb && go install ./cmd/compiledb
+command=go install ./cmd/compiledb
 output=terminal
