@@ -92,14 +92,31 @@ func MakeWrap(args []string) {
 
 	if ParseConfig.NoBuild == false {
 		cmd := exec.Command("make", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
+		// cmd.Stdout = os.Stdout
+		// cmd.Stderr = os.Stderr
+		stdout, err := cmd.StdoutPipe()
 		if err != nil {
+			log.Error("Error:", err)
+			return
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			log.Error("Error:", err)
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
 			if exitError, ok := err.(*exec.ExitError); ok {
 				StatusCode = exitError.ExitCode()
 				log.Errorf("make failed! errorCode: %d", StatusCode)
 			}
+		}
+
+		go TransferPrintScanner(stdout)
+		go TransferPrintScanner(stderr)
+
+		if err := cmd.Wait(); err != nil {
+			log.Error("Error:", err)
 		}
 	}
 

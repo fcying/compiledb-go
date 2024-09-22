@@ -1,9 +1,15 @@
 package internal
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func FileExist(filename string) bool {
@@ -41,4 +47,22 @@ func IsAbsPath(path string) bool {
 		return true
 	}
 	return false
+}
+
+func TransferPrintScanner(in io.ReadCloser) {
+	decoder := simplifiedchinese.GB18030.NewDecoder()
+	scanner := bufio.NewScanner(in)
+
+	for scanner.Scan() {
+		result, err := decoder.String(scanner.Text())
+		if err != nil {
+			log.Error("decode failed!", scanner.Text())
+			result = ""
+		}
+		fmt.Println(result)
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Error("Error reading scanner:", err)
+	}
 }

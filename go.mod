@@ -5,6 +5,7 @@ go 1.22.3
 require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli/v2 v2.27.3
+	golang.org/x/text v0.18.0
 )
 
 require (

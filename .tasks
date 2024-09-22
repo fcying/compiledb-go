@@ -1,8 +1,10 @@
 [build]
 # command=go run ./cmd/compiledb/main.go -v
 command=go run ./cmd/compiledb/main.go -v -c --full-path < ./tests/build.log
+cwd=$(VIM_ROOT)
 output=terminal
 
 [release]
 command=go install ./cmd/compiledb
+cwd=$(VIM_ROOT)
 output=terminal
