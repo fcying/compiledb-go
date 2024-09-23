@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -96,30 +97,30 @@ func MakeWrap(args []string) {
 		// cmd.Stderr = os.Stderr
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			log.Error("Error:", err)
-			return
+			fmt.Println("stdout Error:", err)
+			goto out
 		}
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
-			log.Error("Error:", err)
-			return
+			fmt.Println("stderr Error:", err)
+			goto out
 		}
 
 		if err := cmd.Start(); err != nil {
-			if exitError, ok := err.(*exec.ExitError); ok {
-				StatusCode = exitError.ExitCode()
-				log.Errorf("make failed! errorCode: %d", StatusCode)
-			}
+			fmt.Println("start Error:", err)
+			goto out
 		}
 
 		go TransferPrintScanner(stdout)
 		go TransferPrintScanner(stderr)
 
 		if err := cmd.Wait(); err != nil {
-			log.Error("Error:", err)
+			StatusCode = cmd.ProcessState.ExitCode()
+			fmt.Printf("make failed! errorCode: %d\n", StatusCode)
 		}
 	}
 
+out:
 	wg.Wait()
 }
 

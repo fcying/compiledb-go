@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strings"
 
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
@@ -56,13 +55,13 @@ func TransferPrintScanner(in io.ReadCloser) {
 	for scanner.Scan() {
 		result, err := decoder.String(scanner.Text())
 		if err != nil {
-			log.Error("decode failed!", scanner.Text())
+			fmt.Println("decode failed!", scanner.Text())
 			result = ""
 		}
 		fmt.Println(result)
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Error("Error reading scanner:", err)
+		fmt.Println("Error reading scanner:", err)
 	}
 }
