@@ -3,8 +3,10 @@
 command=go run ./cmd/compiledb/main.go -v -c --full-path < ./tests/build.log
 cwd=$(VIM_ROOT)
 output=terminal
+close=1
 
 [release]
-command=go install ./cmd/compiledb
+command=go install ./cmd/compiledb && GOOS=windows go install ./cmd/compiledb && mv ~/go/bin/windows_amd64/compiledb.exe ~/workspace/go/bin
 cwd=$(VIM_ROOT)
 output=terminal
+close=1

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -27,15 +28,19 @@ func GetBinFullPath(name string) string {
 	return path
 }
 
-func ConvertLinuxPath(path string) string {
-	linuxPath := strings.ReplaceAll(path, "\\", "/")
+func ConvertPath(path string) string {
+	newPath := strings.ReplaceAll(path, "\\", "/")
 
-	// Handle drive letter (e.g., "C:\path" -> "/c/path")
-	// if len(linuxPath) > 1 && linuxPath[1] == ':' {
-	// 	linuxPath = "/" + strings.ToLower(string(linuxPath[0])) + linuxPath[2:]
-	// }
+	if runtime.GOOS == "windows" {
+		// Handle drive letter (e.g.: "/c/path -> c:/path")
+		if len(newPath) > 2 && newPath[0] == '/' && newPath[2] == '/' {
+			newPath = string(newPath[1]) + ":" + newPath[2:]
+		} else if len(newPath) == 2 && newPath[0] == '/' {
+			newPath = string(newPath[1]) + ":"
+		}
+	}
 
-	return linuxPath
+	return newPath
 }
 
 func IsAbsPath(path string) bool {

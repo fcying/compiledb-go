@@ -89,7 +89,7 @@ func Parse(buildLog []string) {
 			workingDir, _ = os.Getwd()
 		}
 	}
-	workingDir = ConvertLinuxPath(workingDir)
+	workingDir = ConvertPath(workingDir)
 	log.Infof("workingDir: %s", workingDir)
 
 	dirStack := []string{workingDir}
@@ -120,8 +120,9 @@ func Parse(buildLog []string) {
 		// Parse directory that make entering/leaving
 		if make_enter_dir.MatchString(line) {
 			group := make_enter_dir.FindStringSubmatch(line)
-			if group != nil {
-				dirStack = append([]string{ConvertLinuxPath(group[1])}, dirStack...)
+			if group != nil && len(group) >= 2 {
+				enterDir := group[1]
+				dirStack = append([]string{ConvertPath(enterDir)}, dirStack...)
 				workingDir = dirStack[0]
 				log.Infof("change workingDir: %s", workingDir)
 			}
@@ -166,7 +167,7 @@ func Parse(buildLog []string) {
 			if ParseConfig.FullPath {
 				compileFullPath = GetBinFullPath(arguments[0])
 				if compileFullPath != "" {
-					compileFullPath = ConvertLinuxPath(compileFullPath)
+					compileFullPath = ConvertPath(compileFullPath)
 					arguments[0] = compileFullPath
 				}
 			}
