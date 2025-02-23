@@ -1,4 +1,4 @@
-# Compilation Database Generator
+# Compilation Database Generator  
 
 rewrite [nickdiego/compiledb](https://github.com/nickdiego/compiledb) in Go for speed.  
 test using a build log over 2MB size and over 200 valid entries

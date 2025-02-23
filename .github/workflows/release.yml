@@ -17,6 +17,7 @@ jobs:
     env:
       VERSION: ""
       COMMIT: ""
+      RELEASE: ""
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -31,14 +32,18 @@ jobs:
         id: check_release
         run: |
           version=""
+          release="false"
           new_ver=$(grep -Po "v\d+\.\d+\.\d+" cmd/compiledb/main.go)
           cur_ver=$(git describe --abbrev=0 --tags)
           commit=$(git rev-parse --short HEAD)
-          if [ "$new_ver" != "$cur_ver" ]; then
+          if [[ "$new_ver" != "$cur_ver" && $(git branch --show-current) == "master" ]]; then
             version=$new_ver
+            release="true"
           else
-            sed -E "s|v[0-9]+\.[0-9]+\.[0-9]+|test version($commit)|" cmd/compiledb/main.go -i
+            version=test-$new_ver\($commit\)
+            sed -E "s|v[0-9]+\.[0-9]+\.[0-9]+|$version|" cmd/compiledb/main.go -i
           fi
+          echo "RELEASE=$release" >> $GITHUB_ENV
           echo "VERSION=$version" >> $GITHUB_ENV
           echo "COMMIT=$commit" >> $GITHUB_ENV
 
@@ -76,20 +81,13 @@ jobs:
           tar cJvf compiledb.txz compiledb
           mv compiledb.txz $out/compiledb-darwin-arm64.txz
 
+          # delete draft
           gh release delete test --cleanup-tag -y || true
+
           ls -la $out
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: compiledb-linux-amd64
-          path: build/compiledb-linux-amd64.txz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: compiledb-windows-amd64
-          path: build/compiledb-windows-amd64.7z
-
       - name: Release
-        if: ${{ env.VERSION != '' }}
+        if: ${{ env.RELEASE == 'true' }}
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ env.VERSION }}
@@ -104,7 +102,7 @@ jobs:
           tag: test
           artifactErrorsFailBuild: true
           generateReleaseNotes: true
-          name: test version ${{ env.COMMIT }}
+          name: ${{ env.VERSION }}
           prerelease: true
           draft: true
           artifacts: "build/*"

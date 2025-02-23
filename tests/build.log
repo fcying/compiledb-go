@@ -10,3 +10,6 @@ cd /opt/compiledb_test/ && printf 't' 1>&2; gcc -c `test -f 'test_none.c' || ech
 printf 't' 1>&2;cc -c -DINC=\"t.h\" ../test2.c
 
 make: Leaving directory '/opt/compiledb_test/src'
+
+make -C /opt/compiledb_test -f t.make config=debug
+gcc -c "test2.c"

@@ -20,10 +20,10 @@ type Command struct {
 
 var (
 	compileRegex *regexp.Regexp
-	fileRegex    *regexp.Regexp
-	excludeRegex *regexp.Regexp
 	RegexCompile string = `^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`
-	RegexFile    string = `^.*\s-c.*\s(.*\.(c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(\s.*$|$)`
+	fileRegex    *regexp.Regexp
+	RegexFile    string = `^.*\s+-c.*\s(?:"|')?(.*\.(?:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')?(\s|$)`
+	excludeRegex *regexp.Regexp
 
 	// Internal regex used to parse build log entries
 	cdRegex        = regexp.MustCompile(`^cd\s+(.*)`)
@@ -33,6 +33,9 @@ var (
 	// Leverage `make --print-directory` option
 	makeEnterDir = regexp.MustCompile("^\\s?make.*?: Entering directory .*['`\"](.*)['`\"]$")
 	makeLeaveDir = regexp.MustCompile(`^\s?make.*?: Leaving directory .*'(.*)'$`)
+
+	// parse make -C xxx
+	makeCmdDir = regexp.MustCompile(`^\s*make.*?-C\s+(.*?)(\s|$)`)
 
 	// We want to skip such lines from configure to avoid spurious MAKE expansion errors.
 	checkingMake = regexp.MustCompile(`^\s?checking whether .*(yes|no)$`)
@@ -187,6 +190,16 @@ func Parse(buildLog []string) {
 				log.Infof("leaving change workingDir: %s", workingDir)
 			}
 			continue
+		}
+
+		if makeCmdDir.MatchString(line) {
+			group := makeCmdDir.FindStringSubmatch(line)
+			if group != nil && len(group) >= 2 {
+				enterDir := group[1]
+				dirStack = append([]string{ConvertPath(enterDir)}, dirStack...)
+				workingDir = dirStack[0]
+				log.Infof("make cmd change workingDir: %s", workingDir)
+			}
 		}
 
 		if checkingMake.MatchString(line) {
