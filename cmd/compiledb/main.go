@@ -47,7 +47,7 @@ func updateConfig(ctx *cli.Context) {
 	log.Debugf("Options: %+v", internal.ParseConfig)
 }
 
-func main() {
+func newApp() *cli.App {
 	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
 USAGE: {{.Name}} {{if .VisibleFlags}}[options]{{end}}{{if .Commands}} command [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[args]...
@@ -172,7 +172,11 @@ COMMANDS:
 			},
 		},
 	}
+	return app
+}
 
+func main() {
+	app := newApp()
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
