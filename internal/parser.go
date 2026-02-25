@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mattn/go-shellwords"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -41,6 +42,21 @@ var (
 	checkingMake = regexp.MustCompile(`^\s?checking whether .*(yes|no)$`)
 )
 
+func splitArgs(input string) []string {
+	p := shellwords.NewParser()
+	args, err := p.Parse(input)
+	if err != nil {
+		log.Warnf("parse failed, input: %s", input)
+		return nil
+	}
+
+	for i := range args {
+		args[i] = strings.ReplaceAll(args[i], "\\", "/")
+	}
+
+	return args
+}
+
 func splitCommands(commands string) []string {
 	result := []string{}
 	for _, v := range shRegex.Split(commands, -1) {
@@ -55,7 +71,7 @@ func splitCommands(commands string) []string {
 func processCompileCommand(command string, workingDir string) ([]string, string) {
 	arguments := []string{}
 	filePath := ""
-	arguments = strings.Fields(command)
+	arguments = splitArgs(command)
 
 	// check compile word
 	findCompile := false
@@ -106,7 +122,7 @@ func processCompileCommand(command string, workingDir string) ([]string, string)
 	}
 
 	if ParseConfig.Macros != "" {
-		arguments = append(arguments, strings.Fields(ParseConfig.Macros)...)
+		arguments = append(arguments, splitArgs(ParseConfig.Macros)...)
 	}
 
 	return arguments, filePath

@@ -3,6 +3,7 @@ module github.com/fcying/compiledb-go
 go 1.23.1
 
 require (
+	github.com/mattn/go-shellwords v1.0.12
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli/v2 v2.27.3
 	golang.org/x/text v0.18.0
