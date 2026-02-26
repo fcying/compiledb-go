@@ -3,7 +3,7 @@ name: release
 on:
   pull_request:
   push:
-    branches: [ master, test ]
+    branches: [ master, dev ]
   workflow_dispatch:
 
 defaults:
@@ -41,7 +41,7 @@ jobs:
             version=$new_ver
             release="true"
           else
-            version=test-$new_ver\($commit\)
+            version=dev-$new_ver\($commit\)
             sed -E "s|v[0-9]+\.[0-9]+\.[0-9]+|$version|" cmd/compiledb/main.go -i
           fi
           echo "RELEASE=$release" >> $GITHUB_ENV
@@ -83,7 +83,7 @@ jobs:
           mv compiledb.txz $out/compiledb-darwin-arm64.txz
 
           # delete draft
-          gh release delete test --cleanup-tag -y || true
+          gh release delete dev --cleanup-tag -y || true
 
           ls -la $out
 
@@ -100,7 +100,7 @@ jobs:
       - name: Update latest
         uses: ncipollo/release-action@v1
         with:
-          tag: test
+          tag: dev
           artifactErrorsFailBuild: true
           generateReleaseNotes: true
           name: ${{ env.VERSION }}

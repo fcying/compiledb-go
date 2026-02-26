@@ -4,8 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
-
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 type Config struct {
@@ -22,10 +21,20 @@ type Config struct {
 	NoStrict     bool
 }
 
-var ParseConfig Config
-var StatusCode int = 0
+type Tool struct {
+	Config     Config
+	Logger     *logrus.Logger
+	StatusCode int
+}
 
-func WriteJSON(filename string, cmdCnt int, data *[]Command) {
+func NewTool(cfg Config, logger *logrus.Logger) *Tool {
+	return &Tool{
+		Config: cfg,
+		Logger: logger,
+	}
+}
+
+func (t *Tool) WriteJSON(filename string, cmdCnt int, data *[]Command) {
 	if cmdCnt == 0 {
 		return
 	}
@@ -33,7 +42,7 @@ func WriteJSON(filename string, cmdCnt int, data *[]Command) {
 	// format
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		log.Fatalf("Error encoding JSON:%v", err)
+		t.Logger.Fatalf("Error encoding JSON:%v", err)
 	}
 
 	// write file
@@ -42,19 +51,19 @@ func WriteJSON(filename string, cmdCnt int, data *[]Command) {
 	} else {
 		outfile, err := os.Create(filename)
 		if err != nil {
-			log.Fatalf("create %v failed! err:%v", filename, err)
+			t.Logger.Fatalf("create %v failed! err:%v", filename, err)
 		}
 		defer outfile.Close()
 
 		_, err = outfile.Write(jsonData)
 		if err != nil {
-			log.Fatalf("write %v failed! err:%v", filename, err)
+			t.Logger.Fatalf("write %v failed! err:%v", filename, err)
 		}
-		log.Infof("write %d entries to %s", cmdCnt, filename)
+		t.Logger.Infof("write %d entries to %s", cmdCnt, filename)
 	}
 }
 
-func Generate() {
+func (t *Tool) Generate() {
 	var (
 		buildLog []string
 		scnner   *bufio.Scanner
@@ -63,21 +72,21 @@ func Generate() {
 	)
 	defer file.Close()
 
-	if ParseConfig.InputFile != "stdin" {
-		file, err = os.OpenFile(ParseConfig.InputFile, os.O_RDONLY, 0444)
+	if t.Config.InputFile != "stdin" {
+		file, err = os.OpenFile(t.Config.InputFile, os.O_RDONLY, 0444)
 		if err != nil {
-			log.Fatalf("open %v failed!", ParseConfig.InputFile)
+			t.Logger.Fatalf("open %v failed!", t.Config.InputFile)
 		}
 		scnner = bufio.NewScanner(file)
-		log.Debugf("Build from file")
+		t.Logger.Debugf("Build from file")
 	} else {
 		scnner = bufio.NewScanner(os.Stdin)
-		log.Debugf("Build from stdin")
+		t.Logger.Debugf("Build from stdin")
 	}
 
 	scnner.Buffer(make([]byte, 1024*1024), 1024*1024*100)
 	for scnner.Scan() {
 		buildLog = append(buildLog, scnner.Text())
 	}
-	Parse(buildLog)
+	t.Parse(buildLog)
 }

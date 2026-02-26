@@ -6,13 +6,12 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 var makePath = "make"
 
-func MakeWrap(args []string) {
+func (t *Tool) MakeWrap(args []string) {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -26,25 +25,25 @@ func MakeWrap(args []string) {
 		cmd.Stderr = &stdoutBuf
 		cmd.Run()
 
-		level := log.GetLevel()
+		level := t.Logger.GetLevel()
 
 		// only print make log
-		if ParseConfig.NoBuild == false {
-			log.SetLevel(log.PanicLevel)
+		if t.Config.NoBuild == false {
+			t.Logger.SetLevel(logrus.PanicLevel)
 		}
 
 		buildLog := strings.Split(stdoutBuf.String(), "\n")
-		Parse(buildLog)
+		t.Parse(buildLog)
 
 		// restore log level
-		if ParseConfig.NoBuild == false {
-			log.SetLevel(level)
+		if t.Config.NoBuild == false {
+			t.Logger.SetLevel(level)
 		}
 
 		wg.Done()
 	}()
 
-	if ParseConfig.NoBuild == false {
+	if t.Config.NoBuild == false {
 		cmd := exec.Command(makePath, args...)
 		// cmd.Stdout = os.Stdout
 		// cmd.Stderr = os.Stderr
@@ -68,8 +67,8 @@ func MakeWrap(args []string) {
 		go TransferPrintScanner(stderr)
 
 		if err := cmd.Wait(); err != nil {
-			StatusCode = cmd.ProcessState.ExitCode()
-			fmt.Printf("make failed! errorCode: %d\n", StatusCode)
+			t.StatusCode = cmd.ProcessState.ExitCode()
+			fmt.Printf("make failed! errorCode: %d\n", t.StatusCode)
 		}
 	}
 

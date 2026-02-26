@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/mattn/go-shellwords"
-	log "github.com/sirupsen/logrus"
 )
 
 type Command struct {
@@ -42,11 +41,11 @@ var (
 	checkingMake = regexp.MustCompile(`^\s?checking whether .*(yes|no)$`)
 )
 
-func splitArgs(input string) []string {
+func (t *Tool) splitArgs(input string) []string {
 	p := shellwords.NewParser()
 	args, err := p.Parse(input)
 	if err != nil {
-		log.Warnf("parse failed, input: %s", input)
+		t.Logger.Warnf("parse failed, input: %s", input)
 		return nil
 	}
 
@@ -57,7 +56,7 @@ func splitArgs(input string) []string {
 	return args
 }
 
-func splitCommands(commands string) []string {
+func (t *Tool) splitCommands(commands string) []string {
 	result := []string{}
 	for _, v := range shRegex.Split(commands, -1) {
 		command := strings.TrimSpace(v)
@@ -68,10 +67,10 @@ func splitCommands(commands string) []string {
 	return result
 }
 
-func processCompileCommand(command string, workingDir string) ([]string, string) {
+func (t *Tool) processCompileCommand(command string, workingDir string) ([]string, string) {
 	arguments := []string{}
 	filePath := ""
-	arguments = splitArgs(command)
+	arguments = t.splitArgs(command)
 
 	// check compile word
 	findCompile := false
@@ -86,7 +85,7 @@ func processCompileCommand(command string, workingDir string) ([]string, string)
 		return nil, ""
 	}
 
-	if ParseConfig.FullPath {
+	if t.Config.FullPath {
 		compileFullPath := ""
 		compileFullPath = GetBinFullPath(arguments[0])
 		if compileFullPath != "" {
@@ -99,36 +98,36 @@ func processCompileCommand(command string, workingDir string) ([]string, string)
 	if group != nil {
 		filePath = group[1]
 	} else {
-		log.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
+		t.Logger.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
 		return nil, ""
 	}
 
-	if ParseConfig.Exclude != "" {
+	if t.Config.Exclude != "" {
 		if excludeRegex.MatchString(filePath) {
-			log.Infof("file %s exclude", filePath)
+			t.Logger.Infof("file %s exclude", filePath)
 			return nil, ""
 		}
 	}
 
-	if ParseConfig.NoStrict == false {
+	if t.Config.NoStrict == false {
 		fileFullPath := filePath
 		if IsAbsPath(filePath) == false {
 			fileFullPath = path.Join(workingDir, filePath)
 		}
 		if FileExist(fileFullPath) == false {
-			log.Warnf("file %s not exist", fileFullPath)
+			t.Logger.Warnf("file %s not exist", fileFullPath)
 			return nil, ""
 		}
 	}
 
-	if ParseConfig.Macros != "" {
-		arguments = append(arguments, splitArgs(ParseConfig.Macros)...)
+	if t.Config.Macros != "" {
+		arguments = append(arguments, t.splitArgs(t.Config.Macros)...)
 	}
 
 	return arguments, filePath
 }
 
-func Parse(buildLog []string) {
+func (t *Tool) Parse(buildLog []string) {
 	var (
 		err              error
 		workingDir       = ""
@@ -139,37 +138,37 @@ func Parse(buildLog []string) {
 	)
 
 	// check workingDir
-	if ParseConfig.BuildDir != "" {
-		workingDir = ParseConfig.BuildDir
+	if t.Config.BuildDir != "" {
+		workingDir = t.Config.BuildDir
 	} else {
-		if ParseConfig.InputFile != "stdin" {
-			absPath, _ := filepath.Abs(ParseConfig.InputFile)
+		if t.Config.InputFile != "stdin" {
+			absPath, _ := filepath.Abs(t.Config.InputFile)
 			workingDir = filepath.Dir(absPath)
 		} else {
 			workingDir, _ = os.Getwd()
 		}
 	}
 	workingDir = ConvertPath(workingDir)
-	log.Infof("workingDir: %s", workingDir)
+	t.Logger.Infof("workingDir: %s", workingDir)
 
 	dirStack := []string{workingDir}
 
 	// init regex
-	if ParseConfig.Exclude != "" {
-		excludeRegex, err = regexp.Compile(ParseConfig.Exclude)
+	if t.Config.Exclude != "" {
+		excludeRegex, err = regexp.Compile(t.Config.Exclude)
 		if err != nil {
-			log.Fatalln("invalid exclude regex:", err)
+			t.Logger.Fatalln("invalid exclude regex:", err)
 			return
 		}
 	}
-	compileRegex, err = regexp.Compile(ParseConfig.RegexCompile)
+	compileRegex, err = regexp.Compile(t.Config.RegexCompile)
 	if err != nil {
-		log.Fatalln("invalid compile_regex:", err)
+		t.Logger.Fatalln("invalid compile_regex:", err)
 		return
 	}
-	fileRegex, err = regexp.Compile(ParseConfig.RegexFile)
+	fileRegex, err = regexp.Compile(t.Config.RegexFile)
 	if err != nil {
-		log.Fatalln("invalid file_regex:", err)
+		t.Logger.Fatalln("invalid file_regex:", err)
 		return
 	}
 
@@ -178,14 +177,14 @@ func Parse(buildLog []string) {
 		if backupWorkingDir != "" {
 			workingDir = backupWorkingDir
 			backupWorkingDir = ""
-			log.Infof("Restore workingDir: %s", workingDir)
+			t.Logger.Infof("Restore workingDir: %s", workingDir)
 		}
 
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		log.Debug("New command:", line)
+		t.Logger.Debug("New command:", line)
 
 		// Parse directory that make entering/leaving {{{
 		if makeEnterDir.MatchString(line) {
@@ -194,7 +193,7 @@ func Parse(buildLog []string) {
 				enterDir := group[1]
 				dirStack = append([]string{ConvertPath(enterDir)}, dirStack...)
 				workingDir = dirStack[0]
-				log.Infof("entering change workingDir: %s", workingDir)
+				t.Logger.Infof("entering change workingDir: %s", workingDir)
 			}
 			continue
 		} else if makeLeaveDir.MatchString(line) {
@@ -203,7 +202,7 @@ func Parse(buildLog []string) {
 				if len(dirStack) > 0 {
 					workingDir = dirStack[0]
 				}
-				log.Infof("leaving change workingDir: %s", workingDir)
+				t.Logger.Infof("leaving change workingDir: %s", workingDir)
 			}
 			continue
 		}
@@ -216,7 +215,7 @@ func Parse(buildLog []string) {
 				if dirStack[0] != "." {
 					workingDir = dirStack[0]
 				}
-				log.Infof("make cmd change workingDir: %s", workingDir)
+				t.Logger.Infof("make cmd change workingDir: %s", workingDir)
 			}
 		}
 
@@ -232,7 +231,7 @@ func Parse(buildLog []string) {
 					nestedCmd := matchGroup[1]
 					out, err := exec.Command("sh", "-c", nestedCmd).Output()
 					if err != nil {
-						log.Error("Error executing nested command:", err)
+						t.Logger.Error("Error executing nested command:", err)
 						out = nil
 					}
 					// update line
@@ -245,8 +244,8 @@ func Parse(buildLog []string) {
 			// not escape \", json.MarshalIndent will do it
 			line = strings.ReplaceAll(line, `\"`, `"`)
 
-			for _, v := range splitCommands(line) {
-				// log.Error(v)
+			for _, v := range t.splitCommands(line) {
+				// t.Logger.Error(v)
 
 				// Parse cd xx {{{
 				matchGroup = cdRegex.FindStringSubmatch(v)
@@ -258,20 +257,20 @@ func Parse(buildLog []string) {
 					} else {
 						workingDir = cdPath
 					}
-					log.Infof("Temporarily change workingDir: %s", workingDir)
+					t.Logger.Infof("Temporarily change workingDir: %s", workingDir)
 					continue
 				}
 
 				// Parse compile command {{{
 				if compileRegex.MatchString(v) {
-					arguments, filePath := processCompileCommand(v, workingDir)
+					arguments, filePath := t.processCompileCommand(v, workingDir)
 					if filePath == "" {
 						continue
 					}
 
 					// append to result
 					command := strings.Join(arguments, " ")
-					if ParseConfig.CommandStyle {
+					if t.Config.CommandStyle {
 						result = append(result, Command{
 							Directory: workingDir,
 							Command:   command,
@@ -284,12 +283,12 @@ func Parse(buildLog []string) {
 							File:      filePath,
 						})
 					}
-					log.Infof("Adding command %d: %s", cmdCnt, command)
+					t.Logger.Infof("Adding command %d: %s", cmdCnt, command)
 					cmdCnt += 1
 				}
 			}
 		}
 	}
 
-	WriteJSON(ParseConfig.OutputFile, cmdCnt, &result)
+	t.WriteJSON(t.Config.OutputFile, cmdCnt, &result)
 }
