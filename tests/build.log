@@ -1,7 +1,9 @@
 make: Entering directory '/opt/compiledb_test/src"
 
 clang.exe -I../include  -c test1.c -o objs/test1.cc.o
-g++ -c test1.cpp
+g++ -c test1.cpp \
+--strip-unneeded \
+-o test1.o
 g++ -c test_none.c
 ccache-clang-11 -c /opt/compiledb_test/test2.c -o objs/test2.c.o
 
