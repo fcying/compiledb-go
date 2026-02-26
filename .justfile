@@ -2,6 +2,7 @@ set unstable
 set shell := ["nu", "-c"]
 set script-interpreter := ["nu"]
 
+[private]
 default: build
 
 [script]

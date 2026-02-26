@@ -12,39 +12,62 @@ import (
 
 var Version string = "v1.5.3"
 
-func init() {
-	log.SetOutput(os.Stdout)
-	// log.SetLevel(log.InfoLevel)
-	log.SetLevel(log.WarnLevel)
-}
-
-func updateConfig(ctx *cli.Context) {
+func createConfig(ctx *cli.Context) internal.Config {
 	outputFile := ctx.String("output")
-	internal.ParseConfig.InputFile = ctx.String("parse")
-	internal.ParseConfig.BuildDir = ctx.String("build-dir")
-	internal.ParseConfig.Exclude = ctx.String("exclude")
-	internal.ParseConfig.Macros = ctx.String("macros")
-	internal.ParseConfig.RegexCompile = ctx.String("regex-compile")
-	internal.ParseConfig.RegexFile = ctx.String("regex-file")
-	internal.ParseConfig.NoBuild = ctx.Bool("no-build")
-	internal.ParseConfig.CommandStyle = ctx.Bool("command-style")
-	internal.ParseConfig.NoStrict = ctx.Bool("no-strict")
-	internal.ParseConfig.FullPath = ctx.Bool("full-path")
-
-	if internal.IsAbsPath(outputFile) == false {
+	if !internal.IsAbsPath(outputFile) {
 		cwd, _ := os.Getwd()
 		outputFile = filepath.Join(cwd, outputFile)
 	}
-	internal.ParseConfig.OutputFile = outputFile
 
-	if internal.ParseConfig.BuildDir != "" {
-		err := os.Chdir(internal.ParseConfig.BuildDir)
+	cfg := internal.Config{
+		InputFile:    ctx.String("parse"),
+		OutputFile:   outputFile,
+		BuildDir:     ctx.String("build-dir"),
+		Exclude:      ctx.String("exclude"),
+		Macros:       ctx.String("macros"),
+		RegexCompile: ctx.String("regex-compile"),
+		RegexFile:    ctx.String("regex-file"),
+		NoBuild:      ctx.Bool("no-build"),
+		CommandStyle: ctx.Bool("command-style"),
+		NoStrict:     ctx.Bool("no-strict"),
+		FullPath:     ctx.Bool("full-path"),
+	}
+
+	if cfg.BuildDir != "" {
+		err := os.Chdir(cfg.BuildDir)
 		if err != nil {
 			log.Error(err)
 		}
 	}
 
-	log.Debugf("Options: %+v", internal.ParseConfig)
+	return cfg
+}
+
+type ActionFunc func(t *internal.Tool, ctx *cli.Context) error
+
+func execute(ctx *cli.Context, fn ActionFunc) error {
+	logger := log.New()
+	logger.SetOutput(os.Stdout)
+
+	if ctx.Bool("verbose") {
+		logger.SetLevel(log.DebugLevel)
+		logger.Info("compiledb-go start, version:", Version)
+	} else {
+		logger.SetLevel(log.WarnLevel)
+	}
+
+	cfg := createConfig(ctx)
+	logger.Debugf("Options: %+v", cfg)
+
+	tool := internal.NewTool(cfg, logger)
+
+	err := fn(tool, ctx)
+
+	if tool.StatusCode != 0 {
+		os.Exit(tool.StatusCode)
+	}
+
+	return err
 }
 
 func newApp() *cli.App {
@@ -73,10 +96,11 @@ COMMANDS:
 			"\n\tWhen no subcommand is used it will parse build log/commands and generates" +
 			"\n\tits corresponding Compilation datAbase.",
 		Action: func(ctx *cli.Context) error {
-			updateConfig(ctx)
-			internal.Generate()
-			log.Debugf("Done")
-			return nil
+			return execute(ctx, func(t *internal.Tool, c *cli.Context) error {
+				t.Generate()
+				t.Logger.Debugf("Done")
+				return nil
+			})
 		},
 		Commands: []*cli.Command{
 			{
@@ -84,9 +108,10 @@ COMMANDS:
 				Usage:           "Generates compilation database file for an arbitrary GNU Make...",
 				SkipFlagParsing: true,
 				Action: func(ctx *cli.Context) error {
-					updateConfig(ctx)
-					internal.MakeWrap(ctx.Args().Slice())
-					return nil
+					return execute(ctx, func(t *internal.Tool, c *cli.Context) error {
+						t.MakeWrap(ctx.Args().Slice())
+						return nil
+					})
 				},
 			},
 		},
@@ -124,11 +149,6 @@ COMMANDS:
 				Aliases:            []string{"v"},
 				Usage:              "Print verbose messages.",
 				DisableDefaultText: true,
-				Action: func(*cli.Context, bool) error {
-					log.SetLevel(log.DebugLevel)
-					log.Info("compiledb-go start, version:", Version)
-					return nil
-				},
 			},
 			// &cli.BoolFlag{
 			// 	Name:               "overwrite",
@@ -179,9 +199,5 @@ func main() {
 	app := newApp()
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
-	}
-
-	if internal.StatusCode != 0 {
-		os.Exit(internal.StatusCode)
 	}
 }
