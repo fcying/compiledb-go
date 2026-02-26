@@ -10,7 +10,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.5.3"
+var Version string = "v1.5.4"
 
 func createConfig(ctx *cli.Context) internal.Config {
 	outputFile := ctx.String("output")

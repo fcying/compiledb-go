@@ -135,6 +135,7 @@ func (t *Tool) Parse(buildLog []string) {
 		cmdCnt           = 0
 		result           []Command
 		matchGroup       []string
+		fullLineBuilder  strings.Builder // Buffer for merging multi-line commands
 	)
 
 	// check workingDir
@@ -173,18 +174,32 @@ func (t *Tool) Parse(buildLog []string) {
 	}
 
 	for _, line := range buildLog {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if before, ok :=strings.CutSuffix(line, "\\"); ok  {
+			// If ending with '\', remove '\' and append a space, then continue to read the next line
+			fullLineBuilder.WriteString(before)
+			fullLineBuilder.WriteString(" ")
+			continue
+		} else {
+			// Otherwise, it is the last line of the command (or a single-line command), append to buffer
+			fullLineBuilder.WriteString(line)
+		}
+		// Get the complete merged line
+		line = fullLineBuilder.String()
+		// Reset buffer for the next command
+		fullLineBuilder.Reset()
+		t.Logger.Debug("New command:", line)
+
 		// Restore workingDir {{{
 		if backupWorkingDir != "" {
 			workingDir = backupWorkingDir
 			backupWorkingDir = ""
 			t.Logger.Infof("Restore workingDir: %s", workingDir)
 		}
-
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		t.Logger.Debug("New command:", line)
 
 		// Parse directory that make entering/leaving {{{
 		if makeEnterDir.MatchString(line) {
