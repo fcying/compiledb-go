@@ -48,6 +48,7 @@ OPTIONS:
    --output file, -o file     Output file, Use '-' to output to stdout (default: "compile_commands.json")
    --build-dir Path, -d Path  Path to be used as initial build dir.
    --exclude value, -e value  Regular expressions to exclude files.
+   --encoding value           Encoding used when printing wrapped make output: raw or gb18030 (default: "raw", env: COMPILEDB_ENCODING)
    --no-build, -n             Only generates compilation db file.
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
@@ -79,11 +80,24 @@ as main makefile (`-f` flag), starting the build from `build` directory (`-C` fl
 $ compiledb make -f core/main.mk -C build
 ```
 
-By default, `compiledb make` generates the compilation database and runs the actual build
-command requested (acting as a make wrapper), the build step can be skipped using the `-n`
+By default, `compiledb make` generates the compilation database, runs the actual build
+command requested (acting as a make wrapper), and prints wrapped `make` output using raw
+stream forwarding. The build step can be skipped using the `-n`
 or `--no-build` options.
 ```bash
 $ compiledb -n make
+```
+
+If your wrapped `make` output is encoded as GB18030, you can opt into decoding it while
+streaming:
+```bash
+$ compiledb --encoding gb18030 make
+```
+
+To avoid repeating the option in a fixed environment, you can set an environment variable:
+```bash
+$ export COMPILEDB_ENCODING=gb18030
+$ compiledb make
 ```
 
 `compiledb` base command has been designed so that it can be used to parse compile commands

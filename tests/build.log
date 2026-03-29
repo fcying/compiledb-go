@@ -1,17 +1,28 @@
-make: Entering directory '/opt/compiledb_test/src"
+# test fixture with 10 valid entries and a few ignored lines
+make: Entering directory '/opt/compiledb_test/src'
 
-clang.exe -I../include  -c test1.c -o objs/test1.cc.o
+clang.exe -I../include -c test1.c -o objs/test1.cc.o
 g++ -c test1.cpp \
---strip-unneeded \
--o test1.o
+  --strip-unneeded \
+  -o test1.o
 g++ -c test_none.c
 ccache-clang-11 -c /opt/compiledb_test/test2.c -o objs/test2.c.o
 
-cd /opt/compiledb_test/ && printf 't' 1>&2; gcc -c `test -f 'test_none.c' || echo 'src/'`test1.c `echo -DNESTED_CMD` &&
+cd /opt/compiledb_test && printf 't' 1>&2; gcc -c `test -f 'test_none.c' || echo 'src/'`test1.c `echo -DNESTED_CMD` &&
 
-printf 't' 1>&2;cc -c -DINC=\"t.h\" ../test2.c
+printf 't' 1>&2; cc -c -DINC=\"t.h\" ../test2.c
+
+clang -c "src dir/test space.c" -o "obj/test space.o"
 
 make: Leaving directory '/opt/compiledb_test/src'
 
 make -C /opt/compiledb_test -f t.make config=debug
 gcc -c "test2.c"
+
+make: Entering directory '/opt/compiledb_test/sub'
+gcc -c nested/sub_file.c
+make: Leaving directory '/opt/compiledb_test/sub'
+
+cd /opt/compiledb_test/build && clang -c ../quoted-name.c
+make -C /opt/compiledb_test/relative-build
+clang++ -c src3.cc
