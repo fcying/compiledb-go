@@ -180,8 +180,10 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		}
 	}
 
-	if t.Config.Macros != "" {
-		arguments = append(arguments, t.splitArgs(t.Config.Macros)...)
+	if len(t.Config.Macros) > 0 {
+		for _, macro := range t.Config.Macros {
+			arguments = append(arguments, t.splitArgs(macro)...)
+		}
 	}
 
 	return arguments, filePath

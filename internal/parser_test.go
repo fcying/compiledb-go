@@ -203,3 +203,87 @@ func TestParseIgnoresCompilerLineWithoutSourceFile(t *testing.T) {
 		t.Fatalf("expected empty JSON array, got %q", string(data))
 	}
 }
+
+func TestParseAppendsRepeatedMacros(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       []string{"-DMODE=1", `-DNAME="hello world"`, "-UDEBUG"},
+	})
+
+	tool.Parse([]string{"gcc -c src/main.c"})
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read output failed: %v", err)
+	}
+
+	var commands []Command
+	if err := json.Unmarshal(data, &commands); err != nil {
+		t.Fatalf("unmarshal output failed: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(commands))
+	}
+
+	got := commands[0].Arguments
+	wantSuffix := []string{"-DMODE=1", "-DNAME=hello world", "-UDEBUG"}
+	if len(got) < len(wantSuffix) {
+		t.Fatalf("arguments too short: %v", got)
+	}
+
+	suffix := got[len(got)-len(wantSuffix):]
+	for i := range wantSuffix {
+		if suffix[i] != wantSuffix[i] {
+			t.Fatalf("unexpected macro suffix\nwant: %v\ngot:  %v", wantSuffix, suffix)
+		}
+	}
+}
+
+func TestParseMacroValueDoesNotSplitComma(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       []string{`-DTEST_BOARD,-m32`},
+	})
+
+	tool.Parse([]string{"gcc -c src/main.c"})
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read output failed: %v", err)
+	}
+
+	var commands []Command
+	if err := json.Unmarshal(data, &commands); err != nil {
+		t.Fatalf("unmarshal output failed: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(commands))
+	}
+
+	got := commands[0].Arguments
+	wantSuffix := []string{"-DTEST_BOARD,-m32"}
+	if len(got) < len(wantSuffix) {
+		t.Fatalf("arguments too short: %v", got)
+	}
+
+	suffix := got[len(got)-len(wantSuffix):]
+	for i := range wantSuffix {
+		if suffix[i] != wantSuffix[i] {
+			t.Fatalf("unexpected macro suffix\nwant: %v\ngot:  %v", wantSuffix, suffix)
+		}
+	}
+}

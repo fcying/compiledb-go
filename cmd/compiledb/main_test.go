@@ -85,7 +85,7 @@ func TestEncodingFlagOverridesEnv(t *testing.T) {
 	}
 }
 
-func TestOutputDashWritesToStdout(t *testing.T) {
+func TestRepeatedMacrosBecomeSeparateArguments(t *testing.T) {
 	oldWd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd failed: %v", err)
@@ -116,6 +116,8 @@ func TestOutputDashWritesToStdout(t *testing.T) {
 		"--parse", buildLog,
 		"--output", "-",
 		"--no-strict",
+		"-m", "-DTEST_BOARD",
+		"-m", "-m32",
 	}
 
 	runErr := app.Run(os.Args)
@@ -131,15 +133,22 @@ func TestOutputDashWritesToStdout(t *testing.T) {
 		t.Fatalf("read stdout failed: %v", err)
 	}
 
-	var commands []map[string]any
+	var commands []struct {
+		Arguments []string `json:"arguments"`
+	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &commands); err != nil {
 		t.Fatalf("stdout should be valid JSON, got %q: %v", string(out), err)
 	}
-	if len(commands) == 0 {
-		t.Fatal("expected stdout JSON to contain at least one command")
+	if len(commands) != 1 {
+		t.Fatalf("expected one command entry, got %d", len(commands))
 	}
 
-	if _, err := os.Stat(filepath.Join(tmpDir, "-")); !os.IsNotExist(err) {
-		t.Fatalf("expected no file named '-', stat err=%v", err)
+	args := commands[0].Arguments
+	if len(args) < 2 {
+		t.Fatalf("arguments too short: %v", args)
+	}
+
+	if args[len(args)-2] != "-DTEST_BOARD" || args[len(args)-1] != "-m32" {
+		t.Fatalf("unexpected trailing args: %v", args)
 	}
 }

@@ -13,7 +13,7 @@ type Config struct {
 	OutputFile   string
 	BuildDir     string
 	Exclude      string
-	Macros       string
+	Macros       []string
 	RegexCompile string
 	RegexFile    string
 	Encoding     string

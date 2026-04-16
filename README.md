@@ -52,7 +52,7 @@ OPTIONS:
    --no-build, -n             Only generates compilation db file.
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
-   --macros value, -m value   Add predefined compiler macros to the compilation database.
+   --macros value, -m value   Add predefined compiler macros to the compilation database (repeat flag for multiple entries).
    --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
    --full-path                Write full path to the compiler executable.
    --regex-compile value      Regular expressions to find compile (default: ^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?)
@@ -78,6 +78,11 @@ so one can, for example, generate `compile_commands.json` using `core/main.mk`
 as main makefile (`-f` flag), starting the build from `build` directory (`-C` flag):
 ```bash
 $ compiledb make -f core/main.mk -C build
+```
+
+To add custom compiler options/macros into generated entries, repeat `-m/--macros`:
+```bash
+$ compiledb -m -DTEST_BOARD -m -m32 make
 ```
 
 By default, `compiledb make` generates the compilation database, runs the actual build
