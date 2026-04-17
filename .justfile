@@ -7,7 +7,7 @@ default: build
 
 [script]
 build:
-    go run ./cmd/compiledb/main.go -v -c --full-path -p ./tests/build.log
+    go run ./cmd/compiledb/main.go -v --full-path -p ./tests/build.log
 
 [script]
 release:

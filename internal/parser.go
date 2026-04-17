@@ -124,6 +124,26 @@ func compilePatterns(cfg Config) (parserPatterns, error) {
 	return patterns, nil
 }
 
+func normalizeCompilerArgs(arguments []string) []string {
+	if len(arguments) < 3 {
+		return arguments
+	}
+
+	normalized := make([]string, 0, len(arguments))
+	normalized = append(normalized, arguments[0])
+
+	for i := 1; i < len(arguments); i++ {
+		if arguments[i] == "-target" && i+1 < len(arguments) {
+			normalized = append(normalized, "--target="+arguments[i+1])
+			i++
+			continue
+		}
+		normalized = append(normalized, arguments[i])
+	}
+
+	return normalized
+}
+
 func (t *Tool) processCompileCommand(command string, workingDir string, patterns parserPatterns) ([]string, string) {
 	arguments := t.splitArgs(command)
 	if len(arguments) == 0 {
@@ -185,6 +205,8 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 			arguments = append(arguments, t.splitArgs(macro)...)
 		}
 	}
+
+	arguments = normalizeCompilerArgs(arguments)
 
 	return arguments, filePath
 }
