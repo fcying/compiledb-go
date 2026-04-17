@@ -287,3 +287,43 @@ func TestParseMacroValueDoesNotSplitComma(t *testing.T) {
 		}
 	}
 }
+
+func TestParseNormalizesTargetArgumentForClangd(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{`clang -target pi32v2 -c "test2.c"`})
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read output failed: %v", err)
+	}
+
+	var commands []Command
+	if err := json.Unmarshal(data, &commands); err != nil {
+		t.Fatalf("unmarshal output failed: %v", err)
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(commands))
+	}
+
+	if len(commands[0].Arguments) < 4 {
+		t.Fatalf("unexpected arguments: %v", commands[0].Arguments)
+	}
+
+	want := []string{"clang", "--target=pi32v2", "-c", "test2.c"}
+	got := commands[0].Arguments[:4]
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected target normalization\nwant: %v\ngot:  %v", want, got)
+		}
+	}
+}
