@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -201,6 +202,59 @@ func TestParseIgnoresCompilerLineWithoutSourceFile(t *testing.T) {
 	}
 	if string(data) != "[]" {
 		t.Fatalf("expected empty JSON array, got %q", string(data))
+	}
+}
+
+func TestParseWarnsForSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	var logs bytes.Buffer
+
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetOutput(&logs)
+
+	tool.Parse([]string{"cc -Iinc -o app a.c b.c -lm"})
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read output failed: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Fatalf("expected empty JSON array, got %q", string(data))
+	}
+	if !strings.Contains(logs.String(), "compiler command contains source files but no -c") {
+		t.Fatalf("expected missing -c warning, got %q", logs.String())
+	}
+}
+
+func TestParseDoesNotWarnForLinkOnlyOrUnrelatedOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	var logs bytes.Buffer
+
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetOutput(&logs)
+
+	tool.Parse([]string{
+		"cc -o app a.o b.o -lm",
+		"cc -c a.c -o a.o",
+		"echo cc -o app a.c b.c",
+	})
+
+	if strings.Contains(logs.String(), "compiler command contains source files but no -c") {
+		t.Fatalf("unexpected missing -c warning: %q", logs.String())
 	}
 }
 

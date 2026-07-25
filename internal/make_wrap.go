@@ -56,8 +56,8 @@ func (t *Tool) MakeWrap(args []string) {
 
 		level := t.Logger.GetLevel()
 		if !t.Config.NoBuild {
-			// Silence parser logs while the real make output is streaming.
-			t.Logger.SetLevel(logrus.PanicLevel)
+			// Keep parser errors visible while the real make output is streaming.
+			t.Logger.SetLevel(logrus.ErrorLevel)
 		}
 
 		buildLog := strings.Split(stdoutBuf.String(), "\n")

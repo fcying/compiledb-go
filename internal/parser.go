@@ -144,6 +144,29 @@ func normalizeCompilerArgs(arguments []string) []string {
 	return normalized
 }
 
+func hasSourceFileWithoutCompileOnlyFlag(arguments []string) bool {
+	for i := 1; i < len(arguments); i++ {
+		argument := arguments[i]
+		if argument == "-c" {
+			return false
+		}
+		if argument == "-o" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+
+		switch strings.ToLower(path.Ext(argument)) {
+		case ".c", ".cpp", ".cc", ".cxx", ".c++", ".s", ".m", ".mm", ".cu":
+			return true
+		}
+	}
+
+	return false
+}
+
 func (t *Tool) processCompileCommand(command string, workingDir string, patterns parserPatterns) ([]string, string) {
 	arguments := t.splitArgs(command)
 	if len(arguments) == 0 {
@@ -151,9 +174,11 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 	}
 
 	findCompile := false
+	compilerStartsCommand := false
 	for i, word := range arguments {
 		if patterns.compile.MatchString(word) {
 			findCompile = true
+			compilerStartsCommand = i == 0
 			arguments = arguments[i:]
 			break
 		}
@@ -180,6 +205,9 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		}
 	}
 	if filePath == "" {
+		if compilerStartsCommand && hasSourceFileWithoutCompileOnlyFlag(arguments) {
+			t.Logger.Errorf("compiler command contains source files but no -c; no compilation database entry generated: %s", command)
+		}
 		t.Logger.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
 		return nil, ""
 	}
