@@ -152,3 +152,46 @@ func TestRepeatedMacrosBecomeSeparateArguments(t *testing.T) {
 		t.Fatalf("unexpected trailing args: %v", args)
 	}
 }
+
+func TestOverwriteFlagsReplaceExistingDatabase(t *testing.T) {
+	for _, flag := range []string{"-f", "--overwrite"} {
+		t.Run(flag, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			buildLog := filepath.Join(tmpDir, "build.log")
+			outputFile := filepath.Join(tmpDir, "compile_commands.json")
+			if err := os.WriteFile(buildLog, []byte("clang -c new.c\n"), 0o644); err != nil {
+				t.Fatalf("write build log failed: %v", err)
+			}
+			existing := `[{"directory":"/old","command":"cc -c old.c","file":"old.c"}]`
+			if err := os.WriteFile(outputFile, []byte(existing), 0o644); err != nil {
+				t.Fatalf("seed output failed: %v", err)
+			}
+
+			app := newApp()
+			args := []string{
+				"compiledb",
+				flag,
+				"--parse", buildLog,
+				"--output", outputFile,
+				"--no-strict",
+			}
+			if err := app.Run(args); err != nil {
+				t.Fatalf("CLI run failed: %v", err)
+			}
+
+			data, err := os.ReadFile(outputFile)
+			if err != nil {
+				t.Fatalf("read output failed: %v", err)
+			}
+			var commands []struct {
+				File string `json:"file"`
+			}
+			if err := json.Unmarshal(data, &commands); err != nil {
+				t.Fatalf("decode output failed: %v", err)
+			}
+			if len(commands) != 1 || commands[0].File != "new.c" {
+				t.Fatalf("expected overwrite to keep only new.c, got %#v", commands)
+			}
+		})
+	}
+}

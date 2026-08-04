@@ -206,7 +206,7 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 	}
 	if filePath == "" {
 		if compilerStartsCommand && hasSourceFileWithoutCompileOnlyFlag(arguments) {
-			t.Logger.Errorf("compiler command contains source files but no -c; no compilation database entry generated: %s", command)
+			t.Logger.Error("source files found without -c; command ignored")
 		}
 		t.Logger.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
 		return nil, ""

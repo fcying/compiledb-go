@@ -95,8 +95,8 @@ func TestParseBuildLogFixture(t *testing.T) {
 		t.Fatalf("unmarshal output failed: %v", err)
 	}
 
-	if len(commands) != 11 {
-		t.Fatalf("expected 11 commands, got %d", len(commands))
+	if len(commands) != 9 {
+		t.Fatalf("expected 9 unique commands, got %d", len(commands))
 	}
 
 	type expectedCommand struct {
@@ -105,7 +105,7 @@ func TestParseBuildLogFixture(t *testing.T) {
 	}
 
 	checks := []expectedCommand{
-		{directory: "/opt/compiledb_test/src", file: "test1.c"},
+		{directory: "/opt/compiledb_test", file: "src/test1.c"},
 		{directory: "/opt/compiledb_test/src", file: "src dir/test space.c"},
 		{directory: "/opt/compiledb_test/sub", file: "nested/sub_file.c"},
 		{directory: "/opt/compiledb_test/build", file: "../quoted-name.c"},
@@ -228,8 +228,11 @@ func TestParseWarnsForSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
 	if string(data) != "[]" {
 		t.Fatalf("expected empty JSON array, got %q", string(data))
 	}
-	if !strings.Contains(logs.String(), "compiler command contains source files but no -c") {
+	if !strings.Contains(logs.String(), "source files found without -c; command ignored") {
 		t.Fatalf("expected missing -c warning, got %q", logs.String())
+	}
+	if strings.Contains(logs.String(), "cc -Iinc -o app a.c b.c -lm") {
+		t.Fatalf("expected command to be omitted from warning, got %q", logs.String())
 	}
 }
 
@@ -253,7 +256,7 @@ func TestParseDoesNotWarnForLinkOnlyOrUnrelatedOutput(t *testing.T) {
 		"echo cc -o app a.c b.c",
 	})
 
-	if strings.Contains(logs.String(), "compiler command contains source files but no -c") {
+	if strings.Contains(logs.String(), "source files found without -c; command ignored") {
 		t.Fatalf("unexpected missing -c warning: %q", logs.String())
 	}
 }

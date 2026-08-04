@@ -53,7 +53,7 @@ func TestMakeWrapReportsSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
 	if tool.StatusCode != 0 {
 		t.Fatalf("expected status code 0, got %d", tool.StatusCode)
 	}
-	if !strings.Contains(logs.String(), "compiler command contains source files but no -c") {
+	if !strings.Contains(logs.String(), "source files found without -c; command ignored") {
 		t.Fatalf("expected missing -c warning, got %q", logs.String())
 	}
 }
