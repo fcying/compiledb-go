@@ -663,13 +663,13 @@ func TestMakeWrapNoBuildAddsPredefinedMacrosAndArguments(t *testing.T) {
 	defer func() { makePath = oldMakePath }()
 
 	tool := newTestTool(t, Config{
-		OutputFile:       outputFile,
-		RegexCompile:     RegexCompile,
-		RegexFile:        RegexFile,
-		NoBuild:          true,
-		NoStrict:         true,
-		PredefinedMacros: true,
-		AddArgs:          []string{"-DADDED=1"},
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+		Macros:       true,
+		AddArgs:      []string{"-DADDED=1"},
 	})
 	tool.MakeWrap(nil)
 	if tool.StatusCode != 0 {

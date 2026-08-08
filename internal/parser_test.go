@@ -780,13 +780,13 @@ func TestParseSupportsImplicitDistributedCompiler(t *testing.T) {
 		t.Run(wrapper, func(t *testing.T) {
 			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 			tool := newTestTool(t, Config{
-				InputFile:        "stdin",
-				OutputFile:       outputFile,
-				RegexCompile:     RegexCompile,
-				RegexFile:        RegexFile,
-				NoStrict:         true,
-				PredefinedMacros: true,
-				FullPath:         true,
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+				Macros:       true,
+				FullPath:     true,
 			})
 			var compilerName string
 			tool.compilerCommand = func(name string, _ ...string) *exec.Cmd {
@@ -976,7 +976,7 @@ func TestParseFiltersSourcesBeforeMacroProbe(t *testing.T) {
 			config.BuildDir = t.TempDir()
 			config.RegexCompile = RegexCompile
 			config.RegexFile = RegexFile
-			config.PredefinedMacros = true
+			config.Macros = true
 			tool := newTestTool(t, config)
 			calls := 0
 			tool.compilerCommand = func(_ string, _ ...string) *exec.Cmd {
@@ -1162,12 +1162,12 @@ func TestParseCustomFileRegexRemainsAuthoritative(t *testing.T) {
 func TestParseMultipleSourcesSkipsMacroProbe(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
-		InputFile:        "stdin",
-		OutputFile:       outputFile,
-		RegexCompile:     RegexCompile,
-		RegexFile:        RegexFile,
-		NoStrict:         true,
-		PredefinedMacros: true,
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       true,
 	})
 	var logs bytes.Buffer
 	tool.Logger.SetOutput(&logs)
@@ -1505,13 +1505,13 @@ func TestParseResolvesRelativeMakeDirectoryForMacrosAndPath(t *testing.T) {
 
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
-		InputFile:        filepath.Join(projectDir, "build.log"),
-		OutputFile:       outputFile,
-		RegexCompile:     RegexCompile,
-		RegexFile:        RegexFile,
-		NoStrict:         true,
-		PredefinedMacros: true,
-		FullPath:         true,
+		InputFile:    filepath.Join(projectDir, "build.log"),
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       true,
+		FullPath:     true,
 	})
 	tool.Parse([]string{"make -C sub", "fake-gcc -c main.c"})
 
