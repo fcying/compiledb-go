@@ -1,15 +1,10 @@
 package internal
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
-
-	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const (
@@ -23,14 +18,6 @@ func FileExist(filename string) bool {
 		return false
 	}
 	return true
-}
-
-func GetBinFullPath(name string) string {
-	path, err := exec.LookPath(name)
-	if err != nil {
-		return ""
-	}
-	return path
 }
 
 func ConvertPath(path string) string {
@@ -79,44 +66,50 @@ func ShellJoinArgs(args []string) string {
 
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
-		if arg == "" {
-			quoted = append(quoted, "''")
-			continue
-		}
-
-		if strings.ContainsAny(arg, " \t\n\r'\"\\$`;&|()<>*?[]{}!") {
-			quoted = append(quoted, "'"+strings.ReplaceAll(arg, "'", `'"'"'`)+"'")
-			continue
-		}
-
-		quoted = append(quoted, arg)
+		quoted = append(quoted, shellQuoteArgument(arg))
 	}
 
 	return strings.Join(quoted, " ")
 }
 
-func TransferPrint(in io.Reader, out io.Writer, encoding string) {
-	if encoding == EncodingRaw {
-		if _, err := io.Copy(out, in); err != nil {
-			fmt.Fprintln(out, "Error reading stream:", err)
-		}
-		return
+func shellQuoteArgument(argument string) string {
+	if runtime.GOOS == "windows" {
+		return windowsQuoteArgument(argument)
 	}
+	if argument != "" && strings.IndexFunc(argument, func(character rune) bool {
+		return !((character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("_@%+=:,./-", character))
+	}) < 0 {
+		return argument
+	}
+	return "'" + strings.ReplaceAll(argument, "'", `'"'"'`) + "'"
+}
 
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024*100)
-	decoder := simplifiedchinese.GB18030.NewDecoder()
-
-	for scanner.Scan() {
-		result, err := decoder.String(scanner.Text())
-		if err != nil {
-			fmt.Fprintln(out, "decode failed!", scanner.Text())
+func windowsQuoteArgument(argument string) string {
+	if argument != "" && !strings.ContainsAny(argument, " \t\n\v\"") {
+		return argument
+	}
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	backslashes := 0
+	for _, character := range argument {
+		if character == '\\' {
+			backslashes++
 			continue
 		}
-		fmt.Fprintln(out, result)
+		if character == '"' {
+			quoted.WriteString(strings.Repeat(`\`, backslashes*2+1))
+			quoted.WriteRune(character)
+			backslashes = 0
+			continue
+		}
+		quoted.WriteString(strings.Repeat(`\`, backslashes))
+		backslashes = 0
+		quoted.WriteRune(character)
 	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(out, "Error reading stream:", err)
-	}
+	quoted.WriteString(strings.Repeat(`\`, backslashes*2))
+	quoted.WriteByte('"')
+	return quoted.String()
 }

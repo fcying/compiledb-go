@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/urfave/cli/v2"
 )
 
 func init() {
@@ -40,6 +41,45 @@ func TestInvalidBuildDirFailsFast(t *testing.T) {
 	}
 	if err := app.Run(os.Args); err == nil {
 		t.Fatal("expected invalid build-dir error")
+	}
+}
+
+func TestRelativeBuildDirIsStoredAsAbsolutePath(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	root := t.TempDir()
+	buildDir := filepath.Join(root, "build")
+	if err := os.Mkdir(buildDir, 0o755); err != nil {
+		t.Fatalf("create build directory failed: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	app := newApp()
+	app.Action = func(ctx *cli.Context) error {
+		cfg, err := createConfig(ctx)
+		if err != nil {
+			return err
+		}
+		if cfg.BuildDir != buildDir {
+			t.Fatalf("unexpected build directory: want %q, got %q", buildDir, cfg.BuildDir)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd after createConfig failed: %v", err)
+		}
+		if cwd != root {
+			t.Fatalf("createConfig changed cwd: want %q, got %q", root, cwd)
+		}
+		return nil
+	}
+	if err := app.Run([]string{"compiledb", "--build-dir", "build"}); err != nil {
+		t.Fatalf("CLI run failed: %v", err)
 	}
 }
 

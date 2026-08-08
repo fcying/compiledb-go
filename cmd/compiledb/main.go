@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/fcying/compiledb-go/internal"
 
@@ -15,6 +18,41 @@ import (
 var Version string = "v1.6.2"
 
 const encodingEnvVar = "COMPILEDB_ENCODING"
+
+type compiledbApp struct {
+	*cli.App
+}
+
+func (a *compiledbApp) Run(arguments []string) error {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	signalDone := make(chan struct{})
+	go func() {
+		defer close(signalDone)
+		select {
+		case received := <-signals:
+			cancel(internal.SignalError{ProcessSignal: received})
+			select {
+			case received = <-signals:
+				os.Exit(internal.SignalExitCode(received))
+			case <-done:
+			}
+		case <-done:
+		}
+	}()
+	err := a.RunContext(ctx, arguments)
+	close(done)
+	signal.Stop(signals)
+	<-signalDone
+	cancel(context.Canceled)
+	return err
+}
+
+func (a *compiledbApp) RunContext(ctx context.Context, arguments []string) error {
+	return a.App.RunContext(ctx, arguments)
+}
 
 func resolveEncoding(ctx *cli.Context) (string, error) {
 	value := ctx.String("encoding")
@@ -38,11 +76,22 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 	if err != nil {
 		return internal.Config{}, err
 	}
+	buildDir := ctx.String("build-dir")
+	if buildDir != "" {
+		buildDir, err = filepath.Abs(buildDir)
+		if err != nil {
+			return internal.Config{}, fmt.Errorf("resolve build-dir %q: %w", ctx.String("build-dir"), err)
+		}
+	}
+	inputFile := ctx.String("parse")
+	if buildDir != "" && inputFile != "stdin" && !internal.IsAbsPath(inputFile) {
+		inputFile = filepath.Join(buildDir, inputFile)
+	}
 
 	cfg := internal.Config{
-		InputFile:    ctx.String("parse"),
+		InputFile:    inputFile,
 		OutputFile:   outputFile,
-		BuildDir:     ctx.String("build-dir"),
+		BuildDir:     buildDir,
 		Exclude:      ctx.String("exclude"),
 		Macros:       ctx.StringSlice("macros"),
 		RegexCompile: ctx.String("regex-compile"),
@@ -56,8 +105,12 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 	}
 
 	if cfg.BuildDir != "" {
-		if err := os.Chdir(cfg.BuildDir); err != nil {
-			return cfg, fmt.Errorf("change build-dir to %q: %w", cfg.BuildDir, err)
+		info, err := os.Stat(cfg.BuildDir)
+		if err != nil {
+			return cfg, fmt.Errorf("access build-dir %q: %w", cfg.BuildDir, err)
+		}
+		if !info.IsDir() {
+			return cfg, fmt.Errorf("build-dir %q is not a directory", cfg.BuildDir)
 		}
 	}
 
@@ -68,7 +121,11 @@ type ActionFunc func(t *internal.Tool, ctx *cli.Context) error
 
 func execute(ctx *cli.Context, fn ActionFunc) error {
 	logger := log.New()
-	logger.SetOutput(os.Stdout)
+	if ctx.String("output") == "-" {
+		logger.SetOutput(os.Stderr)
+	} else {
+		logger.SetOutput(os.Stdout)
+	}
 
 	if ctx.Bool("verbose") {
 		logger.SetLevel(log.DebugLevel)
@@ -84,6 +141,7 @@ func execute(ctx *cli.Context, fn ActionFunc) error {
 	logger.Debugf("Options: %+v", cfg)
 
 	tool := internal.NewTool(cfg, logger)
+	tool.Context = ctx.Context
 
 	err = fn(tool, ctx)
 
@@ -94,7 +152,7 @@ func execute(ctx *cli.Context, fn ActionFunc) error {
 	return err
 }
 
-func newApp() *cli.App {
+func newApp() *compiledbApp {
 	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
 USAGE: {{.Name}} {{if .VisibleFlags}}[options]{{end}}{{if .Commands}} command [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[args]...
@@ -147,14 +205,14 @@ COMMANDS:
 			&cli.BoolFlag{Name: "no-build", Aliases: []string{"n"}, Usage: "Only generates compilation db file", DisableDefaultText: true},
 			&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "Print verbose messages.", DisableDefaultText: true},
 			&cli.BoolFlag{Name: "no-strict", Aliases: []string{"S"}, Usage: "Do not check if source files exist in the file system.", DisableDefaultText: true},
-			&cli.StringSliceFlag{Name: "macros", Aliases: []string{"m"}, Usage: "Add predefined compiler macros to the compilation database (repeat flag for multiple entries)."},
+			&cli.StringSliceFlag{Name: "macros", Aliases: []string{"m"}, Usage: "Add compiler argument to the compilation database (repeat flag for multiple entries)."},
 			&cli.BoolFlag{Name: "command-style", Aliases: []string{"c"}, Usage: `Output compilation database with single "command" string rather than the default "arguments" list of strings.`, DisableDefaultText: true},
 			&cli.BoolFlag{Name: "full-path", Usage: "Write full path to the compiler executable.", DisableDefaultText: true},
 			&cli.StringFlag{Name: "regex-compile", Usage: "Regular expressions to find compile", Value: internal.RegexCompile, DefaultText: internal.RegexCompile},
 			&cli.StringFlag{Name: "regex-file", Usage: "Regular expressions to find file", Value: internal.RegexFile, DefaultText: internal.RegexFile},
 		},
 	}
-	return app
+	return &compiledbApp{App: app}
 }
 
 func main() {

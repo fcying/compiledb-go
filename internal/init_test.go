@@ -1,12 +1,15 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -48,6 +51,59 @@ func TestGenerateFromStdinDoesNotPanic(t *testing.T) {
 	})
 
 	tool.Generate()
+}
+
+func TestGenerateFromStdinReturnsWhenCanceled(t *testing.T) {
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe failed: %v", err)
+	}
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = r.Close()
+		_ = w.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tool := newTestTool(t, Config{
+		InputFile:  "stdin",
+		OutputFile: filepath.Join(t.TempDir(), "compile_commands.json"),
+		NoStrict:   true,
+	})
+	tool.Context = ctx
+	done := make(chan struct{})
+	go func() {
+		tool.Generate()
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Generate did not return after its context was canceled")
+	}
+	if tool.StatusCode == 0 {
+		t.Fatal("canceled Generate returned a successful status")
+	}
+	if _, err := w.WriteString("unread after cancellation\n"); err != nil {
+		t.Fatalf("write after cancellation failed: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdin writer failed: %v", err)
+	}
+	remaining, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read after cancellation failed: %v", err)
+	}
+	if string(remaining) != "unread after cancellation\n" {
+		t.Fatalf("canceled stdin reader remained active: %q", remaining)
+	}
+	if _, err := os.Stat(tool.Config.OutputFile); !os.IsNotExist(err) {
+		t.Fatalf("canceled Generate wrote a compilation database: %v", err)
+	}
 }
 
 func TestWriteJSONUpdatesExistingDatabase(t *testing.T) {
@@ -544,6 +600,44 @@ func TestWriteJSONStdoutUsesOnlyCurrentEntries(t *testing.T) {
 		t.Fatalf("expected one deduplicated current entry, got %#v", entries)
 	}
 	assertTestArgument(t, entries[0], 1, "-DTWO")
+}
+
+func TestWriteJSONStdoutReturnsCanceledStatusWhenBlocked(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe failed: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		_ = r.Close()
+		_ = w.Close()
+	})
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	tool := newTestTool(t, Config{OutputFile: "-", NoStrict: true})
+	tool.Context = ctx
+	commands := make([]Command, 10000)
+	for i := range commands {
+		file := fmt.Sprintf("main-%d-%s.c", i, strings.Repeat("x", 128))
+		commands[i] = Command{Directory: "/tmp", Arguments: []string{"cc", "-c", file}, File: file}
+	}
+	done := make(chan struct{})
+	go func() {
+		tool.WriteJSON("-", len(commands), &commands)
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel(SignalError{ProcessSignal: os.Interrupt})
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked JSON output did not stop after cancellation")
+	}
+	if tool.StatusCode == 0 {
+		t.Fatal("canceled JSON output returned status 0")
+	}
 }
 
 func writeTestJSON(t *testing.T, filename string, value any) {
