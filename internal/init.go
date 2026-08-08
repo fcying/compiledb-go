@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -37,6 +39,18 @@ func NewTool(cfg Config, logger *logrus.Logger) *Tool {
 	}
 }
 
+func (t *Tool) compilationDatabaseBuildDir() string {
+	if t.Config.BuildDir != "" {
+		return compilationDatabaseBuildDir(t.Config.BuildDir)
+	}
+	if t.Config.InputFile != "" && t.Config.InputFile != "stdin" {
+		if absolute, err := filepath.Abs(t.Config.InputFile); err == nil {
+			return ConvertPath(filepath.Dir(absolute))
+		}
+	}
+	return compilationDatabaseBuildDir("")
+}
+
 type compilationDatabaseEntry struct {
 	Directory string
 	File      string
@@ -55,7 +69,7 @@ func decodeCompilationDatabaseEntry(data json.RawMessage) (compilationDatabaseEn
 }
 
 func compilationDatabaseKey(entry compilationDatabaseEntry) string {
-	if IsAbsPath(entry.File) {
+	if isCompilationDatabaseAbsolutePath(entry.File) {
 		return entry.File
 	}
 	if entry.Directory == "" {
@@ -65,6 +79,115 @@ func compilationDatabaseKey(entry compilationDatabaseEntry) string {
 		return entry.Directory + entry.File
 	}
 	return entry.Directory + "/" + entry.File
+}
+
+func isCompilationDatabaseAbsolutePath(value string) bool {
+	return strings.HasPrefix(value, "/") || isExplicitWindowsPath(value)
+}
+
+func compilationDatabaseCompatibilityKeys(entry compilationDatabaseEntry, buildDir string) []string {
+	buildDir = compilationDatabaseBuildDir(buildDir)
+	key := compilationDatabaseKey(entry)
+	keys := []string{key}
+	appendKey := func(candidate string) {
+		for _, existing := range keys {
+			if existing == candidate {
+				return
+			}
+		}
+		keys = append(keys, candidate)
+	}
+
+	if windowsKey, ok := windowsCompilationDatabaseKey(entry); ok {
+		appendKey(windowsKey)
+	}
+	if resolved, ok := resolveLegacyCompilationDatabasePath(entry, buildDir); ok {
+		appendKey(resolved)
+		if windowsKey, ok := windowsPathKey(resolved); ok {
+			appendKey(windowsKey)
+		}
+	}
+	return keys
+}
+
+func windowsCompilationDatabaseKey(entry compilationDatabaseEntry) (string, bool) {
+	if !isExplicitWindowsPath(entry.Directory) && !isExplicitWindowsPath(entry.File) {
+		return "", false
+	}
+
+	file := strings.ReplaceAll(entry.File, `\`, "/")
+	if isExplicitWindowsPath(entry.File) {
+		return strings.ToLower(file), true
+	}
+	if strings.HasPrefix(file, "/") {
+		return "", false
+	}
+	directory := strings.TrimRight(strings.ReplaceAll(entry.Directory, `\`, "/"), "/")
+	return strings.ToLower(directory + "/" + file), true
+}
+
+func windowsPathKey(value string) (string, bool) {
+	if !isExplicitWindowsPath(value) {
+		return "", false
+	}
+	return strings.ToLower(strings.ReplaceAll(value, `\`, "/")), true
+}
+
+func isExplicitWindowsPath(value string) bool {
+	slashPath := strings.ReplaceAll(value, `\`, "/")
+	return strings.HasPrefix(slashPath, "//") || len(slashPath) > 2 &&
+		((slashPath[0] >= 'a' && slashPath[0] <= 'z') || (slashPath[0] >= 'A' && slashPath[0] <= 'Z')) &&
+		slashPath[1] == ':' && slashPath[2] == '/'
+}
+
+func compilationDatabaseBuildDir(buildDir string) string {
+	if isCompilationDatabaseAbsolutePath(buildDir) {
+		return buildDir
+	}
+	if buildDir != "" {
+		if absolute, err := filepath.Abs(buildDir); err == nil {
+			return ConvertPath(absolute)
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return ConvertPath(cwd)
+	}
+	return buildDir
+}
+
+func resolveLegacyCompilationDatabasePath(entry compilationDatabaseEntry, buildDir string) (string, bool) {
+	key := compilationDatabaseKey(entry)
+	if isCompilationDatabaseAbsolutePath(key) || !isCompilationDatabaseAbsolutePath(buildDir) {
+		return "", false
+	}
+
+	relativeDirectory := strings.TrimRight(strings.ReplaceAll(entry.Directory, `\`, "/"), "/")
+	for strings.HasPrefix(relativeDirectory, "./") {
+		relativeDirectory = strings.TrimPrefix(relativeDirectory, "./")
+	}
+	if relativeDirectory == "" || relativeDirectory == "." {
+		return strings.TrimSuffix(ConvertPath(buildDir), "/") + "/" + entry.File, true
+	}
+
+	normalizedBuildDir := strings.TrimSuffix(ConvertPath(buildDir), "/")
+	compareBuildDir := normalizedBuildDir
+	compareDirectory := relativeDirectory
+	if isExplicitWindowsPath(normalizedBuildDir) {
+		compareBuildDir = strings.ToLower(compareBuildDir)
+		compareDirectory = strings.ToLower(compareDirectory)
+	}
+	for prefix := compareDirectory; prefix != ""; {
+		if compareBuildDir == prefix || strings.HasSuffix(compareBuildDir, "/"+prefix) {
+			remainder := relativeDirectory[len(prefix):]
+			return normalizedBuildDir + remainder + "/" + entry.File, true
+		}
+		separator := strings.LastIndex(prefix, "/")
+		if separator < 0 {
+			break
+		}
+		prefix = prefix[:separator]
+	}
+	return "", false
 }
 
 func loadCompilationDatabase(filename string) []json.RawMessage {
@@ -81,7 +204,8 @@ func loadCompilationDatabase(filename string) []json.RawMessage {
 	return entries
 }
 
-func mergeCompilationDatabase(entries []json.RawMessage, strict bool) []json.RawMessage {
+func mergeCompilationDatabase(entries []json.RawMessage, strict bool, buildDir string) []json.RawMessage {
+	buildDir = compilationDatabaseBuildDir(buildDir)
 	merged := make([]json.RawMessage, 0, len(entries))
 	entryIndexes := make(map[string]int, len(entries))
 
@@ -91,14 +215,23 @@ func mergeCompilationDatabase(entries []json.RawMessage, strict bool) []json.Raw
 			continue
 		}
 
-		key := compilationDatabaseKey(entry)
-		if index, found := entryIndexes[key]; found {
-			merged[index] = data
-			continue
+		keys := compilationDatabaseCompatibilityKeys(entry, buildDir)
+		index := -1
+		for _, key := range keys {
+			if foundIndex, found := entryIndexes[key]; found {
+				index = foundIndex
+				break
+			}
 		}
-
-		entryIndexes[key] = len(merged)
-		merged = append(merged, data)
+		if index >= 0 {
+			merged[index] = data
+		} else {
+			index = len(merged)
+			merged = append(merged, data)
+		}
+		for _, key := range keys {
+			entryIndexes[key] = index
+		}
 	}
 
 	if !strict {
@@ -108,7 +241,15 @@ func mergeCompilationDatabase(entries []json.RawMessage, strict bool) []json.Raw
 	filtered := make([]json.RawMessage, 0, len(merged))
 	for _, data := range merged {
 		entry, _ := decodeCompilationDatabaseEntry(data)
-		if _, err := os.Stat(compilationDatabaseKey(entry)); err == nil {
+		sourcePath := compilationDatabaseKey(entry)
+		if !isCompilationDatabaseAbsolutePath(sourcePath) {
+			var ok bool
+			sourcePath, ok = resolveLegacyCompilationDatabasePath(entry, buildDir)
+			if !ok {
+				continue
+			}
+		}
+		if _, err := os.Stat(sourcePath); err == nil {
 			filtered = append(filtered, data)
 		}
 	}
@@ -131,7 +272,7 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 	}
 
 	if filename == "-" {
-		entries = mergeCompilationDatabase(entries, !t.Config.NoStrict)
+		entries = mergeCompilationDatabase(entries, !t.Config.NoStrict, t.compilationDatabaseBuildDir())
 		jsonData, err := json.MarshalIndent(entries, "", "  ")
 		if err != nil {
 			t.Logger.Fatalf("Error encoding JSON:%v", err)
@@ -148,7 +289,7 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 	if !t.Config.Overwrite {
 		entries = append(loadCompilationDatabase(filename), entries...)
 	}
-	entries = mergeCompilationDatabase(entries, !t.Config.NoStrict)
+	entries = mergeCompilationDatabase(entries, !t.Config.NoStrict, t.compilationDatabaseBuildDir())
 
 	jsonData, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
