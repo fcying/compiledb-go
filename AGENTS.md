@@ -11,7 +11,7 @@
 
 - Parser behavior depends on working-directory tracking. It follows Make enter/leave messages, `make -C`, and inline `cd`. Parsing a file starts relative to that log file's directory; stdin starts at the current working directory.
 - Strict mode is the default: a parsed source is omitted unless it exists relative to the tracked directory. Tests commonly use `NoStrict: true` because `tests/build.log` contains `/opt/compiledb_test/...` paths.
-- The default file regex recognizes compile-only commands containing `-c`. A compiler command containing source files but no `-c` currently emits an error, generates no entry, and does not by itself change the exit status. Preserve all three behaviors unless the task explicitly changes support for that command form.
+- The default option-aware scanner records compiler commands containing source inputs even without `-c`. Multi-source commands generate one entry per source; link-only commands without source inputs remain omitted.
 - `compiledb make` runs `make -Bnkw` for command discovery and, unless `--no-build` is set, runs the requested real Make command concurrently. The parser consumes dry-run output; real Make stdout/stderr is forwarded to the caller.
 - Real Make failure takes precedence over dry-run failure. If the real build succeeds but the dry run fails, the dry-run status is returned. Under `--no-build`, dry-run failure is returned directly.
 - Backtick expressions in build-log lines are executed through `sh -c` before command extraction. Do not feed untrusted logs to the parser. Preserve or explicitly test this behavior when changing parser flow.

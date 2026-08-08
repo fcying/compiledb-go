@@ -733,25 +733,6 @@ func quoteDoubleQuotedSubstitution(output string) string {
 	return quoted.String()
 }
 
-func hasCompileOnlyFlag(arguments []string, invocation compilerInvocation) bool {
-	options := true
-	for i := invocation.optionsStart; i < len(arguments); i++ {
-		argument := arguments[i]
-		if options && argument == "--" {
-			options = false
-			continue
-		}
-		if options && compilerOptionTakesArgument(argument) {
-			i++
-			continue
-		}
-		if options && argument == "-c" {
-			return true
-		}
-	}
-	return false
-}
-
 func windowsPathToken(argument string) bool {
 	if len(argument) >= 3 && isASCIIAlpha(argument[0]) &&
 		argument[1] == ':' && (argument[2] == '/' || argument[2] == '\\') {
@@ -1031,7 +1012,6 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 
 	rawArguments, _ := splitMakeCommand(command)
 	findCompile := false
-	compilerStartsCommand := false
 	launcherPrefix := false
 	fullPathSafe := true
 	compilerWordIndex := -1
@@ -1042,7 +1022,6 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 			invocation := parseCompilerInvocation(candidate)
 			if invocation.valid && patterns.compile.MatchString(invocation.compiler) {
 				findCompile = true
-				compilerStartsCommand = true
 				launcherPrefix = location.launcher
 				fullPathSafe = location.fullPathSafe
 				compilerWordIndex = location.index
@@ -1054,7 +1033,6 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		for i, word := range arguments {
 			if patterns.compile.MatchString(word) {
 				findCompile = true
-				compilerStartsCommand = true
 				compilerWordIndex = i
 				launcherPrefix = i > 0
 				fullPathSafe = i == 0
@@ -1084,13 +1062,6 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 	files := sourceFilesFromArguments(arguments, invocation)
 	multipleSources := len(files) > 1
 	if patterns.defaultFile {
-		if !hasCompileOnlyFlag(arguments, invocation) {
-			if compilerStartsCommand && len(files) > 0 {
-				t.Logger.Error("source files found without -c; command ignored")
-			}
-			t.Logger.Debugf("found compile:%s, but not compile-only command, ignore command", arguments[0])
-			return nil
-		}
 		if len(files) == 0 {
 			t.Logger.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
 			return nil
@@ -1107,9 +1078,6 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 			}
 		}
 		if filePath == "" {
-			if compilerStartsCommand && len(files) > 0 && !hasCompileOnlyFlag(arguments, invocation) {
-				t.Logger.Error("source files found without -c; command ignored")
-			}
 			t.Logger.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
 			return nil
 		}
