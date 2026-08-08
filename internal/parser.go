@@ -1115,7 +1115,10 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		}
 		files = []string{ConvertPath(filePath)}
 	}
-	arguments = insertCompilerArguments(arguments, invocation, t.Config.Macros)
+	addedArguments := make([]string, 0, len(t.Config.Macros)+len(t.Config.AddArgs))
+	addedArguments = append(addedArguments, t.Config.Macros...)
+	addedArguments = append(addedArguments, t.Config.AddArgs...)
+	arguments = insertCompilerArguments(arguments, invocation, addedArguments)
 	entryDirectory := applyCompilerWorkingDirectory(arguments, invocation, compilerWorkingDir)
 
 	filteredFiles := make([]string, 0, len(files))

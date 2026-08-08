@@ -478,7 +478,7 @@ func TestParseAddsAndCachesPredefinedMacrosByConfiguration(t *testing.T) {
 		RegexFile:        RegexFile,
 		NoStrict:         true,
 		PredefinedMacros: true,
-		Macros:           []string{"-DUSER=1"},
+		AddArgs:          []string{"-DUSER=1"},
 	})
 
 	var calls [][]string

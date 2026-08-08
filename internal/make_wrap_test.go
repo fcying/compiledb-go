@@ -669,7 +669,7 @@ func TestMakeWrapNoBuildAddsPredefinedMacrosAndArguments(t *testing.T) {
 		NoBuild:          true,
 		NoStrict:         true,
 		PredefinedMacros: true,
-		Macros:           []string{"-DADDED=1"},
+		AddArgs:          []string{"-DADDED=1"},
 	})
 	tool.MakeWrap(nil)
 	if tool.StatusCode != 0 {

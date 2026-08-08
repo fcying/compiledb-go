@@ -526,7 +526,7 @@ func TestParseDoesNotWarnForLinkOnlyOrUnrelatedOutput(t *testing.T) {
 	}
 }
 
-func TestParseAppendsRepeatedCompilerArguments(t *testing.T) {
+func TestParseAppendsRepeatedAddArgs(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
 
@@ -536,7 +536,7 @@ func TestParseAppendsRepeatedCompilerArguments(t *testing.T) {
 		RegexCompile: RegexCompile,
 		RegexFile:    RegexFile,
 		NoStrict:     true,
-		Macros:       []string{"-DMODE=1", `-DNAME="hello world"`, "-UDEBUG"},
+		AddArgs:      []string{"-DMODE=1", `-DNAME="hello world"`, "-UDEBUG"},
 	})
 
 	tool.Parse([]string{"gcc -c src/main.c"})
@@ -577,7 +577,7 @@ func TestParseCommandStylePreservesAddedArgument(t *testing.T) {
 		RegexFile:    RegexFile,
 		NoStrict:     true,
 		CommandStyle: true,
-		Macros:       []string{`-DNAME="hello world"`, `-DREGEX=\d+`},
+		AddArgs:      []string{`-DNAME="hello world"`, `-DREGEX=\d+`},
 	})
 
 	tool.Parse([]string{"gcc -c src/main.c"})
@@ -603,7 +603,7 @@ func TestParseCommandStylePreservesAddedArgument(t *testing.T) {
 	}
 }
 
-func TestParseCompilerArgumentDoesNotSplitComma(t *testing.T) {
+func TestParseAddArgDoesNotSplitComma(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
 
@@ -613,7 +613,7 @@ func TestParseCompilerArgumentDoesNotSplitComma(t *testing.T) {
 		RegexCompile: RegexCompile,
 		RegexFile:    RegexFile,
 		NoStrict:     true,
-		Macros:       []string{`-DTEST_BOARD,-m32`},
+		AddArgs:      []string{`-DTEST_BOARD,-m32`},
 	})
 
 	tool.Parse([]string{"gcc -c src/main.c"})
@@ -693,7 +693,7 @@ func TestParseDoesNotNormalizeAddedTargetArguments(t *testing.T) {
 		RegexCompile: RegexCompile,
 		RegexFile:    RegexFile,
 		NoStrict:     true,
-		Macros:       []string{"-target", "pi32v2"},
+		AddArgs:      []string{"-target", "pi32v2"},
 	})
 
 	tool.Parse([]string{"clang -c test.c"})
@@ -724,7 +724,7 @@ func TestParseInsertsAddedArgumentsBeforeCompilerOptionTerminator(t *testing.T) 
 				RegexCompile: RegexCompile,
 				RegexFile:    RegexFile,
 				NoStrict:     true,
-				Macros:       []string{"-DADDED=1"},
+				AddArgs:      []string{"-DADDED=1"},
 			})
 			tool.Parse([]string{command})
 
@@ -762,7 +762,7 @@ func TestParseDoesNotTreatOptionOperandAsTerminator(t *testing.T) {
 				RegexCompile: RegexCompile,
 				RegexFile:    RegexFile,
 				NoStrict:     true,
-				Macros:       []string{"-DADDED=1"},
+				AddArgs:      []string{"-DADDED=1"},
 			})
 			tool.Parse([]string{command})
 

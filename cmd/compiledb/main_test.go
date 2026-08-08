@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,6 +192,81 @@ func TestRepeatedMacrosBecomeSeparateArguments(t *testing.T) {
 
 	if args[len(args)-2] != "-DTEST_BOARD" || args[len(args)-1] != "-m32" {
 		t.Fatalf("unexpected trailing args: %v", args)
+	}
+}
+
+func TestRepeatedAddArgsPreserveArguments(t *testing.T) {
+	app := newApp()
+	app.Action = func(ctx *cli.Context) error {
+		cfg, err := createConfig(ctx)
+		if err != nil {
+			return err
+		}
+		want := []string{"-DCSV=a,b", `-DNAME="hello world"`, `-DREGEX=\d+`, "-target", "pi32v2"}
+		if !slices.Equal(cfg.AddArgs, want) {
+			t.Fatalf("unexpected add args: want %v, got %v", want, cfg.AddArgs)
+		}
+		return nil
+	}
+	if err := app.Run([]string{
+		"compiledb",
+		"--add-arg", "-DCSV=a,b",
+		"-a", `-DNAME="hello world"`,
+		"--add-arg", `-DREGEX=\d+`,
+		"-a=-target",
+		"--add-arg=pi32v2",
+	}); err != nil {
+		t.Fatalf("CLI run failed: %v", err)
+	}
+}
+
+func TestAddArgsDoNotLeakAcrossAppRuns(t *testing.T) {
+	app := newApp()
+	var got [][]string
+	app.Action = func(ctx *cli.Context) error {
+		cfg, err := createConfig(ctx)
+		if err != nil {
+			return err
+		}
+		got = append(got, cfg.AddArgs)
+		return nil
+	}
+	for _, arguments := range [][]string{
+		{"compiledb", "--add-arg=FIRST"},
+		{"compiledb"},
+		{"compiledb", "-a=SECOND"},
+	} {
+		if err := app.Run(arguments); err != nil {
+			t.Fatalf("CLI run failed: %v", err)
+		}
+	}
+	want := [][]string{{"FIRST"}, nil, {"SECOND"}}
+	if !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Fatalf("add arguments leaked across runs:\nwant: %#v\ngot:  %#v", want, got)
+	}
+}
+
+func TestAddArgsDoNotLeakAcrossAppRunContexts(t *testing.T) {
+	app := newApp()
+	var got [][]string
+	app.Action = func(ctx *cli.Context) error {
+		cfg, err := createConfig(ctx)
+		if err != nil {
+			return err
+		}
+		got = append(got, cfg.AddArgs)
+		return nil
+	}
+	for _, arguments := range [][]string{
+		{"compiledb", "--add-arg=FIRST"},
+		{"compiledb"},
+	} {
+		if err := app.RunContext(context.Background(), arguments); err != nil {
+			t.Fatalf("CLI run failed: %v", err)
+		}
+	}
+	if want := [][]string{{"FIRST"}, nil}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Fatalf("add arguments leaked across RunContext calls:\nwant: %#v\ngot:  %#v", want, got)
 	}
 }
 
