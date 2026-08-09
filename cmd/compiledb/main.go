@@ -52,6 +52,7 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 		CommandStyle: ctx.Bool("command-style"),
 		NoStrict:     ctx.Bool("no-strict"),
 		FullPath:     ctx.Bool("full-path"),
+		Overwrite:    ctx.Bool("overwrite"),
 	}
 
 	if cfg.BuildDir != "" {
@@ -139,6 +140,7 @@ COMMANDS:
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "parse", Aliases: []string{"p"}, Usage: "Build log `file` to parse compilation commands.", Value: "stdin"},
 			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "Output `file`, Use '-' to output to stdout", Value: "compile_commands.json"},
+			&cli.BoolFlag{Name: "overwrite", Aliases: []string{"f"}, Usage: "Overwrite compile_commands.json instead of just updating it.", DisableDefaultText: true},
 			&cli.StringFlag{Name: "build-dir", Aliases: []string{"d"}, Usage: "`Path` to be used as initial build dir."},
 			&cli.StringFlag{Name: "exclude", Aliases: []string{"e"}, Usage: "Regular expressions to exclude files"},
 			&cli.StringFlag{Name: "encoding", Usage: "Encoding used when printing wrapped make output: raw or gb18030 (or set COMPILEDB_ENCODING)", Value: internal.EncodingRaw},
