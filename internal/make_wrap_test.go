@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 func TestMakeWrapNoBuildStopsOnDryRunFailure(t *testing.T) {
@@ -575,6 +578,52 @@ esac
 				t.Fatalf("unexpected status: want %d, got %d", test.want, tool.StatusCode)
 			}
 		})
+	}
+}
+
+func TestMakeOutputIncompleteIsVisibleAtDefaultLevel(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+
+	if !reportMakeOutputError(logger, errProcessOutputIncomplete) {
+		t.Fatal("incomplete Make output was not recognized")
+	}
+	if !strings.Contains(output.String(), "make output incomplete") {
+		t.Fatalf("incomplete Make output was hidden at ErrorLevel: %q", output.String())
+	}
+}
+
+func TestMakeWrapKeepsSuccessfulDryRunStatusWhenOutputIsIncomplete(t *testing.T) {
+	tmpDir := t.TempDir()
+	makeScript := filepath.Join(tmpDir, "fake-make.sh")
+	contents := "#!/bin/sh\necho 'gcc -c main.c'\nsleep 30 &\n"
+	if err := os.WriteFile(makeScript, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeScript
+	defer func() { makePath = oldMakePath }()
+
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		OutputFile:   filepath.Join(tmpDir, "compile_commands.json"),
+		NoBuild:      true,
+		NoStrict:     true,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, tool.Config.OutputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "main.c" {
+		t.Fatalf("incomplete successful dry run changed result: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	if !strings.Contains(logs.String(), "make output incomplete") {
+		t.Fatalf("incomplete dry-run output was not diagnosed: %q", logs.String())
 	}
 }
 

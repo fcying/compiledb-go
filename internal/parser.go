@@ -18,7 +18,7 @@ type Command struct {
 }
 
 var (
-	RegexCompile string = `(?i)^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?`
+	RegexCompile string = `(?i)^(?:.*[/\\])?(?:[A-Za-z0-9_.+]+-)*(?:(?:gcc|g\+\+)(?:(?:-?[0-9]+(?:\.[0-9]+)*(?:-(?:posix|win32))?)|-(?:posix|win32)|-mp-[0-9]+(?:\.[0-9]+)*)?|clang(?:\+\+|-cl)?(?:-[0-9]+(?:\.[0-9]+)*)?|(?:cc|c\+\+)(?:-[0-9]+(?:\.[0-9]+)*)?)(?:\.exe)?$`
 	RegexFile    string = `^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$)`
 
 	// We want to skip such lines from configure to avoid spurious MAKE expansion errors.
@@ -643,10 +643,21 @@ func makeDirectoryEvent(line, event string) (string, bool) {
 }
 
 func (t *Tool) expandNestedCommands(line, workingDir string) (string, bool) {
-	var result strings.Builder
+	for {
+		expanded, found, ok := t.expandNextNestedCommand(line, workingDir)
+		if !ok {
+			return "", false
+		}
+		if !found {
+			return line, true
+		}
+		line = expanded
+	}
+}
+
+func (t *Tool) expandNextNestedCommand(line, workingDir string) (string, bool, bool) {
 	var quote byte
 	escaped := false
-	copyFrom := 0
 	for i := 0; i < len(line); i++ {
 		character := line[i]
 		if escaped {
@@ -691,13 +702,14 @@ func (t *Tool) expandNestedCommands(line, workingDir string) (string, bool) {
 				out, err := outputProcessCommand(cmd, t.operationContext())
 				if err != nil {
 					t.Logger.Error("Error executing nested command:", err)
-					return "", false
+					return "", true, false
 				}
-				result.WriteString(line[copyFrom:start])
 				output := strings.TrimRight(string(out), "\n")
+				replacement := ""
 				if quote == '"' {
-					result.WriteString(quoteDoubleQuotedSubstitution(output))
+					replacement = quoteDoubleQuotedSubstitution(output)
 				} else {
+					var result strings.Builder
 					fields := strings.Fields(output)
 					for fieldIndex, field := range fields {
 						if fieldIndex > 0 {
@@ -705,17 +717,16 @@ func (t *Tool) expandNestedCommands(line, workingDir string) (string, bool) {
 						}
 						result.WriteString(quotePOSIXShellArgument(field))
 					}
+					replacement = result.String()
 				}
-				copyFrom = i + 1
-				break
+				return line[:start] + replacement + line[i+1:], true, true
 			}
 		}
 		if i >= len(line) {
-			return "", false
+			return "", true, false
 		}
 	}
-	result.WriteString(line[copyFrom:])
-	return result.String(), true
+	return line, false, true
 }
 
 func quotePOSIXShellArgument(argument string) string {
@@ -864,6 +875,10 @@ func defaultCompilerStart(arguments []string, workingDir string) defaultCompiler
 	}
 
 	switch executableBase(arguments[index]) {
+	case "time":
+		return commandAfterTime(arguments, index+1, fullPathSafe, launcherWorkingDir)
+	case "nice":
+		return commandAfterNice(arguments, index+1, fullPathSafe, launcherWorkingDir)
 	case "env":
 		launcherPrefix = true
 		index++
@@ -884,7 +899,7 @@ func defaultCompilerStart(arguments []string, workingDir string) defaultCompiler
 				if index >= len(arguments) {
 					return defaultCompilerLocation{}
 				}
-				return defaultCompilerLocation{index: index, launcher: launcherPrefix, fullPathSafe: fullPathSafe, workingDir: launcherWorkingDir, valid: true}
+				return nestedCompilerStart(arguments, index, fullPathSafe, launcherWorkingDir)
 			case argument == "-C" || argument == "--chdir":
 				if index+1 >= len(arguments) {
 					return defaultCompilerLocation{}
@@ -911,7 +926,7 @@ func defaultCompilerStart(arguments []string, workingDir string) defaultCompiler
 				}
 				index++
 			default:
-				return defaultCompilerLocation{index: index, launcher: launcherPrefix, fullPathSafe: fullPathSafe, workingDir: launcherWorkingDir, valid: true}
+				return nestedCompilerStart(arguments, index, fullPathSafe, launcherWorkingDir)
 			}
 		}
 		return defaultCompilerLocation{}
@@ -947,6 +962,114 @@ func defaultCompilerStart(arguments []string, workingDir string) defaultCompiler
 		}
 		return defaultCompilerLocation{index: index, launcher: launcherPrefix, fullPathSafe: fullPathSafe, workingDir: launcherWorkingDir, valid: true}
 	}
+}
+
+func commandAfterTime(arguments []string, index int, fullPathSafe bool, workingDir string) defaultCompilerLocation {
+	for index < len(arguments) {
+		argument := arguments[index]
+		switch {
+		case argument == "--":
+			return nestedCompilerStart(arguments, index+1, fullPathSafe, workingDir)
+		case argument == "-p" || argument == "--portability" || argument == "-a" || argument == "--append" ||
+			argument == "-v" || argument == "--verbose" || argument == "-q" || argument == "--quiet":
+			index++
+		case argument == "-f" || argument == "--format" || argument == "-o" || argument == "--output":
+			if index+1 >= len(arguments) {
+				return defaultCompilerLocation{}
+			}
+			index += 2
+		case strings.HasPrefix(argument, "-f") && len(argument) > 2 || strings.HasPrefix(argument, "--format=") ||
+			strings.HasPrefix(argument, "-o") && len(argument) > 2 || strings.HasPrefix(argument, "--output="):
+			index++
+		case strings.HasPrefix(argument, "-"):
+			return defaultCompilerLocation{}
+		default:
+			return nestedCompilerStart(arguments, index, fullPathSafe, workingDir)
+		}
+	}
+	return defaultCompilerLocation{}
+}
+
+func commandAfterNice(arguments []string, index int, fullPathSafe bool, workingDir string) defaultCompilerLocation {
+	for index < len(arguments) {
+		argument := arguments[index]
+		switch {
+		case argument == "--":
+			return nestedCompilerStart(arguments, index+1, fullPathSafe, workingDir)
+		case argument == "-n" || argument == "--adjustment":
+			if index+1 >= len(arguments) {
+				return defaultCompilerLocation{}
+			}
+			index += 2
+		case strings.HasPrefix(argument, "--adjustment=") || isNiceAdjustment(argument):
+			index++
+		case strings.HasPrefix(argument, "-"):
+			return defaultCompilerLocation{}
+		default:
+			return nestedCompilerStart(arguments, index, fullPathSafe, workingDir)
+		}
+	}
+	return defaultCompilerLocation{}
+}
+
+func isNiceAdjustment(argument string) bool {
+	if len(argument) < 2 || argument[0] != '-' {
+		return false
+	}
+	for _, character := range argument[1:] {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func nestedCompilerStart(arguments []string, index int, fullPathSafe bool, workingDir string) defaultCompilerLocation {
+	if index >= len(arguments) {
+		return defaultCompilerLocation{}
+	}
+	location := defaultCompilerStart(arguments[index:], workingDir)
+	if !location.valid {
+		return defaultCompilerLocation{}
+	}
+	location.index += index
+	location.launcher = true
+	location.fullPathSafe = fullPathSafe && location.fullPathSafe
+	return location
+}
+
+func compilerMatchesPatterns(compiler string, patterns parserPatterns) bool {
+	return patterns.compile.MatchString(compiler)
+}
+
+func commandContainsCompiler(command string, arguments []string, workingDir string, patterns parserPatterns) bool {
+	if patterns.defaultCompile {
+		location := defaultCompilerStart(arguments, workingDir)
+		if !location.valid {
+			return false
+		}
+		invocation := parseCompilerInvocation(arguments[location.index:])
+		return invocation.valid && compilerMatchesPatterns(invocation.compiler, patterns)
+	}
+	return patterns.compile.MatchString(command)
+}
+
+func compilerBacktickCandidate(command, workingDir string) bool {
+	start := strings.Index(command, "`")
+	if start < 0 {
+		return false
+	}
+	prefix := command[:start] + "__compiledb_compiler_candidate__"
+	arguments, ok := splitMakeCommand(prefix)
+	if !ok {
+		return false
+	}
+	location := defaultCompilerStart(arguments, workingDir)
+	if !location.valid || location.index >= len(arguments) {
+		return false
+	}
+	invocation := parseCompilerInvocation(arguments[location.index:])
+	return invocation.valid && invocation.compiler == "__compiledb_compiler_candidate__"
 }
 
 func libtoolCompilerStart(arguments []string, index int, fullPathSafe bool, workingDir string) defaultCompilerLocation {
@@ -1020,7 +1143,11 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		if location := defaultCompilerStart(arguments, workingDir); location.valid {
 			candidate := arguments[location.index:]
 			invocation := parseCompilerInvocation(candidate)
-			if invocation.valid && patterns.compile.MatchString(invocation.compiler) {
+			if location.index < len(rawArguments) {
+				restoreWindowsArguments(candidate, rawArguments[location.index:], invocation)
+				invocation = parseCompilerInvocation(candidate)
+			}
+			if invocation.valid && compilerMatchesPatterns(invocation.compiler, patterns) {
 				findCompile = true
 				launcherPrefix = location.launcher
 				fullPathSafe = location.fullPathSafe
@@ -1243,10 +1370,32 @@ func (t *Tool) Parse(buildLog []string) {
 				continue
 			}
 			rawArguments, rawOK := splitMakeCommand(commandText)
-			needsExpansion := patterns.compile.MatchString(commandText)
+			needsExpansion := false
+			compilerCandidateExpansion := false
+			if patterns.defaultCompile {
+				needsExpansion = rawOK && commandContainsCompiler(commandText, rawArguments, lineWorkingDir, patterns)
+				compilerCandidateExpansion = !needsExpansion && compilerBacktickCandidate(commandText, lineWorkingDir)
+			} else {
+				needsExpansion = patterns.compile.MatchString(commandText)
+			}
 			if rawOK && len(rawArguments) > 0 {
 				needsExpansion = needsExpansion || rawArguments[0] == "cd" || isMakeExecutableFromArguments(rawArguments) ||
 					t.makeDirectoryMarkers && executableBase(rawArguments[0]) == "mkdir"
+			}
+			if compilerCandidateExpansion {
+				var found bool
+				var ok bool
+				commandText, found, ok = t.expandNextNestedCommand(commandText, lineWorkingDir)
+				if !ok || !found {
+					previousStatus = shellStatusUnknown
+					continue
+				}
+				candidateArguments, parsed := splitMakeCommand(commandText)
+				if !parsed || !commandContainsCompiler(commandText, candidateArguments, lineWorkingDir, patterns) {
+					previousStatus = shellStatusUnknown
+					continue
+				}
+				needsExpansion = true
 			}
 			if needsExpansion && strings.Contains(commandText, "`") {
 				var ok bool
@@ -1272,6 +1421,11 @@ func (t *Tool) Parse(buildLog []string) {
 					continue
 				}
 				nextDir := trackedPathJoin(lineWorkingDir, arguments[1])
+				if t.Config.NoStrict {
+					lineWorkingDir = nextDir
+					previousStatus = shellStatusSuccess
+					continue
+				}
 				info, err := os.Stat(nextDir)
 				virtual := hasVirtualDirectory(virtualDirectories, nextDir)
 				if (err != nil || !info.IsDir()) && !(t.makeDirectoryMarkers && virtual) {
@@ -1290,7 +1444,7 @@ func (t *Tool) Parse(buildLog []string) {
 				previousStatus = shellStatusUnknown
 			}
 
-			if !patterns.compile.MatchString(commandText) {
+			if !commandContainsCompiler(commandText, arguments, lineWorkingDir, patterns) {
 				if isMakeExecutableFromArguments(arguments) {
 					previousStatus = shellStatusUnknown
 					continue

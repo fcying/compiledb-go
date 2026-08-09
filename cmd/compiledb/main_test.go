@@ -90,6 +90,61 @@ func TestRelativeBuildDirIsStoredAsAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestRelativeBuildDirPreservesStrictLegacyEntry(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	root := t.TempDir()
+	buildDir := filepath.Join(root, "build")
+	if err := os.Mkdir(buildDir, 0o755); err != nil {
+		t.Fatalf("create build directory failed: %v", err)
+	}
+	for _, filename := range []string{"main.c", "empty.log"} {
+		if err := os.WriteFile(filepath.Join(buildDir, filename), nil, 0o644); err != nil {
+			t.Fatalf("create build file failed: %v", err)
+		}
+	}
+	outputFile := filepath.Join(root, "compile_commands.json")
+	existing := `[{"directory":".","command":"cc -c main.c","file":"main.c","extension":{"keep":true}}]`
+	if err := os.WriteFile(outputFile, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write existing database failed: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	if err := newApp().Run([]string{
+		"compiledb",
+		"--build-dir", "build",
+		"--parse", "empty.log",
+		"--output", "compile_commands.json",
+	}); err != nil {
+		t.Fatalf("CLI run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read compilation database failed: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("decode compilation database failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0]["file"] != "main.c" {
+		t.Fatalf("valid legacy entry was removed: %#v", entries)
+	}
+	extension, ok := entries[0]["extension"].(map[string]any)
+	if !ok || extension["keep"] != true {
+		t.Fatalf("legacy raw fields were not preserved: %#v", entries[0])
+	}
+	if cwd, err := os.Getwd(); err != nil || cwd != root {
+		t.Fatalf("CLI changed cwd: cwd=%q err=%v", cwd, err)
+	}
+}
+
 func TestDirectParseIgnoresMakeOutputEncoding(t *testing.T) {
 	for name, test := range map[string]struct {
 		arguments []string

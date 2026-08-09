@@ -291,6 +291,11 @@ func TestParseHonorsKnownConditionalBranches(t *testing.T) {
 	if err := os.Mkdir(subDir, 0o755); err != nil {
 		t.Fatalf("create subdirectory failed: %v", err)
 	}
+	for _, filename := range []string{"failed-cd-fallback.c", "true-and.c"} {
+		if err := os.WriteFile(filepath.Join(projectDir, filename), nil, 0o644); err != nil {
+			t.Fatalf("create source %s failed: %v", filename, err)
+		}
+	}
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
 		InputFile:    "stdin",
@@ -298,7 +303,6 @@ func TestParseHonorsKnownConditionalBranches(t *testing.T) {
 		BuildDir:     projectDir,
 		RegexCompile: RegexCompile,
 		RegexFile:    RegexFile,
-		NoStrict:     true,
 	})
 
 	tool.Parse([]string{
@@ -483,6 +487,130 @@ func TestParseGeneratesEntriesForSourceFilesWithoutCompileOnlyFlag(t *testing.T)
 	commands := readCompilerTestCommands(t, outputFile)
 	if len(commands) != 2 || commands[0].File != "a.c" || commands[1].File != "b.c" {
 		t.Fatalf("expected one entry per source, got %#v", commands)
+	}
+}
+
+func TestParseRejectsNonCompilerClangTools(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"clang-format format.c",
+		"clang-tidy tidy.c",
+		"clang-18-tidy versioned-tidy.c",
+		"gcc-12-ar versioned-ar.c",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/cc1 -quiet internal.c",
+		"clang -fsyntax-only compile.c",
+		"arm-none-eabi-gcc cross.c",
+		"gcc13 versioned.c",
+		"g++13 versioned.cpp",
+		"gcc-mp-14 macports.c",
+		"g++-mp-14 macports.cpp",
+		"clang-18.1 versioned-clang.c",
+		"gcc-13.2-posix versioned-posix.c",
+		"x86_64-w64-mingw32-gcc-posix mingw-posix.c",
+		"x86_64-w64-mingw32-g++-win32 mingw-win32.cpp",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	want := []string{"compile.c", "cross.c", "versioned.c", "versioned.cpp", "macports.c", "macports.cpp", "versioned-clang.c", "versioned-posix.c", "mingw-posix.c", "mingw-win32.cpp"}
+	if len(commands) != len(want) {
+		t.Fatalf("non-compiler Clang tools produced entries: %#v", commands)
+	}
+	for i, file := range want {
+		if commands[i].File != file {
+			t.Fatalf("unexpected compiler driver entry at %d: want %q, got %#v", i, file, commands)
+		}
+	}
+}
+
+func TestParseSupportsKnownProcessLaunchers(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"time gcc -c timed.c",
+		"time -p clang -c portable.c",
+		"nice gcc -c nice.c",
+		"nice -n 5 clang -c adjusted.c",
+		"time nice gcc -c nested.c",
+		"env MODE=1 time clang -c env-time.c",
+		"env -- time gcc13 -c env-separator.c",
+		"echo gcc -c fake.c",
+		"echo time gcc -c fake-time.c",
+		"time -- -p gcc -c false-positive-time.c",
+		"nice -- -5 gcc -c false-positive-nice.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	want := []string{"timed.c", "portable.c", "nice.c", "adjusted.c", "nested.c", "env-time.c", "env-separator.c"}
+	if len(commands) != len(want) {
+		t.Fatalf("known launcher commands were not parsed: %#v", commands)
+	}
+	for i, file := range want {
+		if commands[i].File != file {
+			t.Fatalf("unexpected launcher entry at %d: want %q, got %#v", i, file, commands)
+		}
+	}
+}
+
+func TestParseExpandsBacktickCompilerTokenBeforeDriverValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	marker := filepath.Join(tmpDir, "echo-backtick-ran")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"`printf gcc` -c generated.c",
+		"time `printf gcc` -c timed.c",
+		"env MODE=1 `printf gcc` -c env.c",
+		"ccache `printf gcc` -c wrapped.c",
+		"echo `touch " + ShellJoinArgs([]string{marker}) + "; printf gcc` -c fake.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 4 || commands[0].File != "generated.c" || commands[1].File != "timed.c" ||
+		commands[2].File != "env.c" || commands[3].File != "wrapped.c" {
+		t.Fatalf("backtick compiler token was not validated after expansion: %#v", commands)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("non-compiler backtick was executed: %v", err)
+	}
+}
+
+func TestParseNoStrictTracksMissingInlineDirectory(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{"cd /remote/build && gcc -c main.c"})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].Directory != "/remote/build" || commands[0].File != "main.c" {
+		t.Fatalf("no-strict rejected missing tracked directory: %#v", commands)
 	}
 }
 
