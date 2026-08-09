@@ -19,6 +19,7 @@ type Config struct {
 	BuildDir         string
 	Exclude          string
 	Macros           []string
+	AddArgs          []string
 	PredefinedMacros bool
 	RegexCompile     string
 	RegexFile        string

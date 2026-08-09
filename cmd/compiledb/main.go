@@ -19,8 +19,28 @@ var Version string = "v1.6.2"
 
 const encodingEnvVar = "COMPILEDB_ENCODING"
 
+type compilerArguments []string
+
+func (a *compilerArguments) Set(value string) error {
+	*a = append(*a, value)
+	return nil
+}
+
+func (a *compilerArguments) String() string {
+	return strings.Join(*a, ", ")
+}
+
+func addArguments(ctx *cli.Context) []string {
+	arguments, ok := ctx.Generic("add-arg").(*compilerArguments)
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), (*arguments)...)
+}
+
 type compiledbApp struct {
 	*cli.App
+	addArgs *compilerArguments
 }
 
 func (a *compiledbApp) Run(arguments []string) error {
@@ -51,6 +71,7 @@ func (a *compiledbApp) Run(arguments []string) error {
 }
 
 func (a *compiledbApp) RunContext(ctx context.Context, arguments []string) error {
+	*a.addArgs = nil
 	return a.App.RunContext(ctx, arguments)
 }
 
@@ -66,6 +87,7 @@ func resolveEncoding(ctx *cli.Context) (string, error) {
 }
 
 func createConfig(ctx *cli.Context) (internal.Config, error) {
+	addArgs := addArguments(ctx)
 	outputFile := ctx.String("output")
 	if outputFile != "-" && !internal.IsAbsPath(outputFile) {
 		cwd, _ := os.Getwd()
@@ -94,6 +116,7 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 		BuildDir:     buildDir,
 		Exclude:      ctx.String("exclude"),
 		Macros:       ctx.StringSlice("macros"),
+		AddArgs:      addArgs,
 		RegexCompile: ctx.String("regex-compile"),
 		RegexFile:    ctx.String("regex-file"),
 		Encoding:     encoding,
@@ -153,6 +176,8 @@ func execute(ctx *cli.Context, fn ActionFunc) error {
 }
 
 func newApp() *compiledbApp {
+	addArgs := compilerArguments{}
+
 	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
 USAGE: {{.Name}} {{if .VisibleFlags}}[options]{{end}}{{if .Commands}} command [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[args]...
@@ -206,13 +231,15 @@ COMMANDS:
 			&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "Print verbose messages.", DisableDefaultText: true},
 			&cli.BoolFlag{Name: "no-strict", Aliases: []string{"S"}, Usage: "Do not check if source files exist in the file system.", DisableDefaultText: true},
 			&cli.StringSliceFlag{Name: "macros", Aliases: []string{"m"}, Usage: "Add compiler argument to the compilation database (repeat flag for multiple entries)."},
+			&cli.GenericFlag{Name: "add-arg", Usage: "Add an argument to each compiler command (repeat flag for multiple arguments).", Destination: &addArgs},
+			&cli.GenericFlag{Name: "a", Usage: "Alias for --add-arg.", Destination: &addArgs},
 			&cli.BoolFlag{Name: "command-style", Aliases: []string{"c"}, Usage: `Output compilation database with single "command" string rather than the default "arguments" list of strings.`, DisableDefaultText: true},
 			&cli.BoolFlag{Name: "full-path", Usage: "Write full path to the compiler executable.", DisableDefaultText: true},
 			&cli.StringFlag{Name: "regex-compile", Usage: "Regular expressions to find compile", Value: internal.RegexCompile, DefaultText: internal.RegexCompile},
 			&cli.StringFlag{Name: "regex-file", Usage: "Regular expressions to find file", Value: internal.RegexFile, DefaultText: internal.RegexFile},
 		},
 	}
-	return &compiledbApp{App: app}
+	return &compiledbApp{App: app, addArgs: &addArgs}
 }
 
 func main() {

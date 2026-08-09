@@ -54,6 +54,8 @@ OPTIONS:
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
    --macros value, -m value   Add compiler arguments to the compilation database (repeat flag for multiple entries).
+   --add-arg value            Add an argument to each compiler command (repeat flag for multiple arguments).
+   -a value                   Alias for --add-arg.
    --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
    --full-path                Write full path to the compiler executable.
    --regex-compile value      Regular expressions to find compile (default: (?i)^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?)
@@ -98,6 +100,12 @@ $ compiledb make -f core/main.mk -C build
 To add custom compiler arguments into generated entries, repeat `-m/--macros`:
 ```bash
 $ compiledb --macros='-DCSV=a,b' -m=-m32 make
+```
+
+The equivalent `-a/--add-arg` option is available for migration to the dedicated compiler
+argument flag. Each flag value is appended as one argument without comma or shell-word splitting:
+```bash
+$ compiledb --add-arg='-DCSV=a,b' -a=-m32 make
 ```
 
 By default, `compiledb make` generates the compilation database, runs the actual build
