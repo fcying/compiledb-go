@@ -86,7 +86,7 @@ func resolveEncoding(ctx *cli.Context) (string, error) {
 	return internal.NormalizeEncoding(value)
 }
 
-func createConfig(ctx *cli.Context) (internal.Config, error) {
+func createConfig(ctx *cli.Context, validateEncoding bool) (internal.Config, error) {
 	addArgs := addArguments(ctx)
 	outputFile := ctx.String("output")
 	if outputFile != "-" && !internal.IsAbsPath(outputFile) {
@@ -94,9 +94,13 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 		outputFile = filepath.Join(cwd, outputFile)
 	}
 
-	encoding, err := resolveEncoding(ctx)
-	if err != nil {
-		return internal.Config{}, err
+	encoding := internal.EncodingRaw
+	var err error
+	if validateEncoding {
+		encoding, err = resolveEncoding(ctx)
+		if err != nil {
+			return internal.Config{}, err
+		}
 	}
 	buildDir := ctx.String("build-dir")
 	if buildDir != "" {
@@ -106,8 +110,15 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 		}
 	}
 	inputFile := ctx.String("parse")
-	if buildDir != "" && inputFile != "stdin" && !internal.IsAbsPath(inputFile) {
-		inputFile = filepath.Join(buildDir, inputFile)
+	if inputFile != "-" && !internal.IsAbsPath(inputFile) {
+		if buildDir != "" {
+			inputFile = filepath.Join(buildDir, inputFile)
+		} else {
+			inputFile, err = filepath.Abs(inputFile)
+			if err != nil {
+				return internal.Config{}, fmt.Errorf("resolve input file %q: %w", ctx.String("parse"), err)
+			}
+		}
 	}
 
 	cfg := internal.Config{
@@ -142,7 +153,7 @@ func createConfig(ctx *cli.Context) (internal.Config, error) {
 
 type ActionFunc func(t *internal.Tool, ctx *cli.Context) error
 
-func execute(ctx *cli.Context, fn ActionFunc) error {
+func execute(ctx *cli.Context, validateEncoding bool, fn ActionFunc) error {
 	logger := log.New()
 	if ctx.String("output") == "-" {
 		logger.SetOutput(os.Stderr)
@@ -157,7 +168,7 @@ func execute(ctx *cli.Context, fn ActionFunc) error {
 		logger.SetLevel(log.WarnLevel)
 	}
 
-	cfg, err := createConfig(ctx)
+	cfg, err := createConfig(ctx, validateEncoding)
 	if err != nil {
 		return err
 	}
@@ -203,7 +214,7 @@ COMMANDS:
 			"\n\tWhen no subcommand is used it will parse build log/commands and generates" +
 			"\n\tits corresponding Compilation datAbase.",
 		Action: func(ctx *cli.Context) error {
-			return execute(ctx, func(t *internal.Tool, c *cli.Context) error {
+			return execute(ctx, false, func(t *internal.Tool, c *cli.Context) error {
 				t.Generate()
 				t.Logger.Debugf("Done")
 				return nil
@@ -214,14 +225,14 @@ COMMANDS:
 			Usage:           "Generates compilation database file for an arbitrary GNU Make...",
 			SkipFlagParsing: true,
 			Action: func(ctx *cli.Context) error {
-				return execute(ctx, func(t *internal.Tool, c *cli.Context) error {
+				return execute(ctx, true, func(t *internal.Tool, c *cli.Context) error {
 					t.MakeWrap(ctx.Args().Slice())
 					return nil
 				})
 			},
 		}},
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "parse", Aliases: []string{"p"}, Usage: "Build log `file` to parse compilation commands.", Value: "stdin"},
+			&cli.StringFlag{Name: "parse", Aliases: []string{"p"}, Usage: "Build log `file` to parse compilation commands, or '-' for stdin.", Value: "-"},
 			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "Output `file`, Use '-' to output to stdout", Value: "compile_commands.json"},
 			&cli.BoolFlag{Name: "overwrite", Aliases: []string{"f"}, Usage: "Overwrite compile_commands.json instead of just updating it.", DisableDefaultText: true},
 			&cli.StringFlag{Name: "build-dir", Aliases: []string{"d"}, Usage: "`Path` to be used as initial build dir."},

@@ -1,4 +1,4 @@
-# test fixture with 10 valid entries and a few ignored lines
+# test fixture with 9 unique valid entries after directory + file deduplication and a few ignored lines
 make: Entering directory '/opt/compiledb_test/src'
 
 clang.exe -I../include -c test1.c -o objs/test1.cc.o
