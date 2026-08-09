@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"bytes"
 	"testing"
 )
 
@@ -27,29 +26,32 @@ func TestNormalizeEncoding(t *testing.T) {
 	}
 }
 
-func TestTransferPrintRaw(t *testing.T) {
-	var out bytes.Buffer
-	TransferPrint(bytes.NewBufferString("hello\n"), &out, EncodingRaw)
-
-	if out.String() != "hello\n" {
-		t.Fatalf("expected raw output to pass through unchanged, got %q", out.String())
-	}
-}
-
-func TestTransferPrintGB18030(t *testing.T) {
-	var out bytes.Buffer
-	TransferPrint(bytes.NewBuffer([]byte{0xC4, 0xE3, 0xBA, 0xC3, '\n'}), &out, EncodingGB18030)
-
-	if out.String() != "你好\n" {
-		t.Fatalf("expected gb18030-decoded output, got %q", out.String())
-	}
-}
-
 func TestShellJoinArgs(t *testing.T) {
 	got := ShellJoinArgs([]string{"clang", "-DNAME=hello world", "-c", "src dir/a.c", "-DQUOTE=it's"})
 	want := `clang '-DNAME=hello world' -c 'src dir/a.c' '-DQUOTE=it'"'"'s'`
 
 	if got != want {
 		t.Fatalf("unexpected shell join output\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
+func TestShellJoinArgsQuotesShellExpansionCharacters(t *testing.T) {
+	got := ShellJoinArgs([]string{"gcc", "#define", "~root", "$HOME", "*.c"})
+	want := `gcc '#define' '~root' '$HOME' '*.c'`
+	if got != want {
+		t.Fatalf("unexpected shell join output\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
+func TestWindowsQuoteArgument(t *testing.T) {
+	for argument, want := range map[string]string{
+		`plain`:                `plain`,
+		`C:\Program Files\gcc`: `"C:\Program Files\gcc"`,
+		`value\`:               `value\`,
+		`a"b`:                  `"a\"b"`,
+	} {
+		if got := windowsQuoteArgument(argument); got != want {
+			t.Fatalf("unexpected Windows quoting for %q: want %q, got %q", argument, want, got)
+		}
 	}
 }

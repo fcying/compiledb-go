@@ -2,8 +2,11 @@ package internal
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -11,32 +14,49 @@ import (
 )
 
 type Config struct {
-	InputFile    string
-	OutputFile   string
-	BuildDir     string
-	Exclude      string
-	Macros       []string
-	RegexCompile string
-	RegexFile    string
-	Encoding     string
-	CommandStyle bool
-	FullPath     bool
-	NoBuild      bool
-	NoStrict     bool
-	Overwrite    bool
+	InputFile        string
+	OutputFile       string
+	BuildDir         string
+	Exclude          string
+	Macros           []string
+	PredefinedMacros bool
+	RegexCompile     string
+	RegexFile        string
+	Encoding         string
+	CommandStyle     bool
+	FullPath         bool
+	NoBuild          bool
+	NoStrict         bool
+	Overwrite        bool
 }
 
 type Tool struct {
 	Config     Config
 	Logger     *logrus.Logger
 	StatusCode int
+	Context    context.Context
+
+	predefinedMacros       map[string][]string
+	compilerCommand        func(name string, arg ...string) *exec.Cmd
+	compilerCommandContext func(context.Context, string, ...string) *exec.Cmd
+	makeDirectoryMarkers   bool
 }
 
 func NewTool(cfg Config, logger *logrus.Logger) *Tool {
 	return &Tool{
-		Config: cfg,
-		Logger: logger,
+		Config:                 cfg,
+		Logger:                 logger,
+		Context:                context.Background(),
+		predefinedMacros:       make(map[string][]string),
+		compilerCommandContext: exec.CommandContext,
 	}
+}
+
+func (t *Tool) operationContext() context.Context {
+	if t.Context != nil {
+		return t.Context
+	}
+	return context.Background()
 }
 
 func (t *Tool) compilationDatabaseBuildDir() string {
@@ -277,11 +297,16 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 		if err != nil {
 			t.Logger.Fatalf("Error encoding JSON:%v", err)
 		}
-		if _, err := os.Stdout.Write(jsonData); err != nil {
+		jsonData = append(jsonData, '\n')
+		if err := writeFileWithContext(t.operationContext(), os.Stdout, jsonData); err != nil {
+			if t.operationContext().Err() != nil {
+				t.StatusCode = contextExitCode(t.operationContext())
+				return
+			}
 			t.Logger.Fatalf("write stdout failed! err:%v", err)
 		}
-		if _, err := os.Stdout.Write([]byte("\n")); err != nil {
-			t.Logger.Fatalf("write stdout newline failed! err:%v", err)
+		if t.operationContext().Err() != nil {
+			t.StatusCode = contextExitCode(t.operationContext())
 		}
 		return
 	}
@@ -313,31 +338,44 @@ func (t *Tool) Generate() {
 	var (
 		buildLog []string
 		scanner  *bufio.Scanner
-		file     *os.File
 		err      error
 	)
 
 	if t.Config.InputFile != "stdin" {
-		file, err = os.OpenFile(t.Config.InputFile, os.O_RDONLY, 0o444)
+		var data []byte
+		data, err = readPathWithContext(t.operationContext(), t.Config.InputFile)
 		if err != nil {
+			if t.operationContext().Err() != nil {
+				t.StatusCode = contextExitCode(t.operationContext())
+				return
+			}
 			t.Logger.Fatalf("open %v failed!", t.Config.InputFile)
 		}
-		defer file.Close()
-
-		scanner = bufio.NewScanner(file)
+		scanner = bufio.NewScanner(bytes.NewReader(data))
 		t.Logger.Debugf("Build from file")
 	} else {
-		scanner = bufio.NewScanner(os.Stdin)
+		data, err := readFileWithContext(t.operationContext(), os.Stdin)
+		if err != nil {
+			if t.operationContext().Err() != nil {
+				t.StatusCode = contextExitCode(t.operationContext())
+				return
+			}
+			t.Logger.Fatalf("read stdin failed: %v", err)
+		}
+		scanner = bufio.NewScanner(bytes.NewReader(data))
 		t.Logger.Debugf("Build from stdin")
 	}
 
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024*100)
 	for scanner.Scan() {
+		if t.operationContext().Err() != nil {
+			t.StatusCode = contextExitCode(t.operationContext())
+			return
+		}
 		buildLog = append(buildLog, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
 		t.Logger.Fatalf("read build log failed: %v", err)
 	}
-
 	t.Parse(buildLog)
 }
