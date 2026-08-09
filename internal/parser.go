@@ -28,7 +28,7 @@ var (
 type parserPatterns struct {
 	compile        *regexp.Regexp
 	file           *regexp.Regexp
-	exclude        *regexp.Regexp
+	exclude        []*regexp.Regexp
 	defaultCompile bool
 	defaultFile    bool
 }
@@ -329,12 +329,12 @@ func mergeLogicalLines(lines []string) []string {
 func compilePatterns(cfg Config) (parserPatterns, error) {
 	patterns := parserPatterns{}
 
-	if cfg.Exclude != "" {
-		excludeRegex, err := regexp.Compile(cfg.Exclude)
+	for _, pattern := range cfg.Exclude {
+		excludeRegex, err := regexp.Compile(pattern)
 		if err != nil {
 			return patterns, err
 		}
-		patterns.exclude = excludeRegex
+		patterns.exclude = append(patterns.exclude, excludeRegex)
 	}
 
 	compileRegex, err := regexp.Compile(cfg.RegexCompile)
@@ -1088,7 +1088,15 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 
 	filteredFiles := make([]string, 0, len(files))
 	for _, sourceFile := range files {
-		if patterns.exclude != nil && patterns.exclude.MatchString(sourceFile) {
+		excluded := false
+		for _, exclude := range patterns.exclude {
+			location := exclude.FindStringIndex(sourceFile)
+			if location != nil && location[0] == 0 {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
 			t.Logger.Infof("file %s exclude", sourceFile)
 			continue
 		}
@@ -1102,9 +1110,8 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 			if !strings.HasPrefix(normalizedSource, "/") && !(windowsContext && isExplicitWindowsPath(normalizedSource)) {
 				fileFullPath = trackedPathJoinContext(entryDirectory, sourceFile, windowsContext)
 			}
-			info, err := os.Stat(fileFullPath)
-			if err != nil || info.IsDir() {
-				t.Logger.Warnf("file %s not exist", fileFullPath)
+			if err := strictSourceFile(fileFullPath); err != nil {
+				t.Logger.Warnf("skip source %s: %v", fileFullPath, err)
 				continue
 			}
 		}

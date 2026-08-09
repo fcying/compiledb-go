@@ -12,12 +12,15 @@ const (
 	EncodingGB18030 = "gb18030"
 )
 
-func FileExist(filename string) bool {
-	_, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
+func strictSourceFile(filename string) error {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return err
 	}
-	return true
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	return nil
 }
 
 func ConvertPath(path string) string {

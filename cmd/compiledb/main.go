@@ -38,9 +38,29 @@ func addArguments(ctx *cli.Context) []string {
 	return append([]string(nil), (*arguments)...)
 }
 
+type excludePatterns []string
+
+func (p *excludePatterns) Set(value string) error {
+	*p = append(*p, value)
+	return nil
+}
+
+func (p *excludePatterns) String() string {
+	return strings.Join(*p, ", ")
+}
+
+func exclusions(ctx *cli.Context) []string {
+	patterns, ok := ctx.Generic("exclude").(*excludePatterns)
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), (*patterns)...)
+}
+
 type compiledbApp struct {
 	*cli.App
-	addArgs *compilerArguments
+	addArgs  *compilerArguments
+	excludes *excludePatterns
 }
 
 func (a *compiledbApp) Run(arguments []string) error {
@@ -72,6 +92,7 @@ func (a *compiledbApp) Run(arguments []string) error {
 
 func (a *compiledbApp) RunContext(ctx context.Context, arguments []string) error {
 	*a.addArgs = nil
+	*a.excludes = nil
 	return a.App.RunContext(ctx, arguments)
 }
 
@@ -125,7 +146,7 @@ func createConfig(ctx *cli.Context, validateEncoding bool) (internal.Config, err
 		InputFile:    inputFile,
 		OutputFile:   outputFile,
 		BuildDir:     buildDir,
-		Exclude:      ctx.String("exclude"),
+		Exclude:      exclusions(ctx),
 		AddArgs:      addArgs,
 		RegexCompile: ctx.String("regex-compile"),
 		RegexFile:    ctx.String("regex-file"),
@@ -155,17 +176,13 @@ type ActionFunc func(t *internal.Tool, ctx *cli.Context) error
 
 func execute(ctx *cli.Context, validateEncoding bool, fn ActionFunc) error {
 	logger := log.New()
-	if ctx.String("output") == "-" {
-		logger.SetOutput(os.Stderr)
-	} else {
-		logger.SetOutput(os.Stdout)
-	}
+	logger.SetOutput(os.Stderr)
 
 	if ctx.Bool("verbose") {
 		logger.SetLevel(log.DebugLevel)
 		logger.Info("compiledb-go start, version:", Version)
 	} else {
-		logger.SetLevel(log.WarnLevel)
+		logger.SetLevel(log.ErrorLevel)
 	}
 
 	cfg, err := createConfig(ctx, validateEncoding)
@@ -186,8 +203,23 @@ func execute(ctx *cli.Context, validateEncoding bool, fn ActionFunc) error {
 	return err
 }
 
+func showUsageError(ctx *cli.Context, err error, isSubcommand bool) error {
+	output := ctx.App.Writer
+	ctx.App.Writer = ctx.App.ErrWriter
+	defer func() { ctx.App.Writer = output }()
+
+	_, _ = fmt.Fprintf(ctx.App.Writer, "Incorrect Usage: %s\n\n", err)
+	if isSubcommand {
+		_ = cli.ShowSubcommandHelp(ctx)
+	} else {
+		_ = cli.ShowAppHelp(ctx)
+	}
+	return err
+}
+
 func newApp() *compiledbApp {
 	addArgs := compilerArguments{}
+	excludes := excludePatterns{}
 
 	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
@@ -204,6 +236,9 @@ COMMANDS:
 	app := &cli.App{
 		// Compiled:             time.Now()
 		EnableBashCompletion:   true,
+		Writer:                 os.Stdout,
+		ErrWriter:              os.Stderr,
+		OnUsageError:           showUsageError,
 		Version:                Version,
 		UseShortOptionHandling: true,
 		HideHelpCommand:        true,
@@ -236,7 +271,8 @@ COMMANDS:
 			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "Output `file`, Use '-' to output to stdout", Value: "compile_commands.json"},
 			&cli.BoolFlag{Name: "overwrite", Aliases: []string{"f"}, Usage: "Overwrite compile_commands.json instead of just updating it.", DisableDefaultText: true},
 			&cli.StringFlag{Name: "build-dir", Aliases: []string{"d"}, Usage: "`Path` to be used as initial build dir."},
-			&cli.StringFlag{Name: "exclude", Aliases: []string{"e"}, Usage: "Regular expressions to exclude files"},
+			&cli.GenericFlag{Name: "exclude", Usage: "Regular expression matched from the start of the source path (repeat for multiple expressions).", Destination: &excludes},
+			&cli.GenericFlag{Name: "e", Usage: "Alias for --exclude.", Destination: &excludes},
 			&cli.StringFlag{Name: "encoding", Usage: "Encoding used when printing wrapped make output: raw or gb18030 (or set COMPILEDB_ENCODING)", Value: internal.EncodingRaw},
 			&cli.BoolFlag{Name: "no-build", Aliases: []string{"n"}, Usage: "Only generates compilation db file", DisableDefaultText: true},
 			&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "Print verbose messages.", DisableDefaultText: true},
@@ -250,10 +286,11 @@ COMMANDS:
 			&cli.StringFlag{Name: "regex-file", Usage: "Regular expressions to find file", Value: internal.RegexFile, DefaultText: internal.RegexFile},
 		},
 	}
-	return &compiledbApp{App: app, addArgs: &addArgs}
+	return &compiledbApp{App: app, addArgs: &addArgs, excludes: &excludes}
 }
 
 func main() {
+	log.SetOutput(os.Stderr)
 	app := newApp()
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)

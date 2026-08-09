@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,12 +27,12 @@ func init() {
 func TestParser(t *testing.T) {
 	log.Info("TestParser")
 	app := newApp()
-	os.Args = []string{
+	arguments := []string{
 		"compiledb",
 		"--parse", "../../tests/build.log",
 		"--output", "compile_commands.json",
 	}
-	if err := app.Run(os.Args); err != nil {
+	if err := app.Run(arguments); err != nil {
 		t.Fatalf("CLI run failed: %v", err)
 	}
 }
@@ -37,13 +40,13 @@ func TestParser(t *testing.T) {
 func TestInvalidBuildDirFailsFast(t *testing.T) {
 	app := newApp()
 	missingDir := filepath.Join(t.TempDir(), "missing")
-	os.Args = []string{
+	arguments := []string{
 		"compiledb",
 		"--build-dir", missingDir,
 		"--parse", "../../tests/build.log",
 		"--output", filepath.Join(t.TempDir(), "compile_commands.json"),
 	}
-	if err := app.Run(os.Args); err == nil {
+	if err := app.Run(arguments); err == nil {
 		t.Fatal("expected invalid build-dir error")
 	}
 }
@@ -238,7 +241,7 @@ func TestRepeatedAddArgsPreserveArguments(t *testing.T) {
 	t.Cleanup(func() { os.Stdout = oldStdout })
 
 	app := newApp()
-	os.Args = []string{
+	arguments := []string{
 		"compiledb",
 		"--parse", buildLog,
 		"--output", "-",
@@ -250,7 +253,7 @@ func TestRepeatedAddArgsPreserveArguments(t *testing.T) {
 		"--add-arg=pi32v2",
 	}
 
-	runErr := app.Run(os.Args)
+	runErr := app.Run(arguments)
 	if err := w.Close(); err != nil {
 		t.Fatalf("close stdout writer failed: %v", err)
 	}
@@ -375,6 +378,30 @@ func TestAddArgsDoNotLeakAcrossAppRunContexts(t *testing.T) {
 	}
 }
 
+func TestExcludePatternsPreserveOrderAndDoNotLeak(t *testing.T) {
+	app := newApp()
+	var got []internal.Config
+	app.Action = func(ctx *cli.Context) error {
+		cfg, err := createConfig(ctx, false)
+		if err != nil {
+			return err
+		}
+		got = append(got, cfg)
+		return nil
+	}
+	for _, arguments := range [][]string{
+		{"compiledb", "--exclude=vendor/", "-e=generated/"},
+		{"compiledb"},
+	} {
+		if err := app.Run(arguments); err != nil {
+			t.Fatalf("CLI run failed: %v", err)
+		}
+	}
+	if len(got) != 2 || !slices.Equal(got[0].Exclude, []string{"vendor/", "generated/"}) || got[1].Exclude != nil {
+		t.Fatalf("exclude patterns were not preserved per invocation: %#v", got)
+	}
+}
+
 func TestMacroFailureKeepsStdoutAsJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	buildLog := filepath.Join(tmpDir, "build.log")
@@ -434,6 +461,193 @@ func TestMacroFailureKeepsStdoutAsJSON(t *testing.T) {
 	if !strings.Contains(string(stderr), "failed to get predefined macros") {
 		t.Fatalf("expected macro failure on stderr, got %q", stderr)
 	}
+}
+
+func TestDefaultDiagnosticsUseStderr(t *testing.T) {
+	tmpDir := t.TempDir()
+	buildLog := filepath.Join(tmpDir, "build.log")
+	contents := "gcc -I`false` -c failed.c\ngcc -c 'tokenizer.c\ngcc -c valid.c\n"
+	if err := os.WriteFile(buildLog, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe failed: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe failed: %v", err)
+	}
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	t.Cleanup(func() { os.Stdout, os.Stderr = oldStdout, oldStderr })
+
+	runErr := newApp().Run([]string{
+		"compiledb",
+		"--parse", buildLog,
+		"--output", filepath.Join(tmpDir, "compile_commands.json"),
+		"--no-strict",
+	})
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	if runErr != nil {
+		t.Fatalf("CLI run failed: %v", runErr)
+	}
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout failed: %v", err)
+	}
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr failed: %v", err)
+	}
+	if len(stdout) != 0 {
+		t.Fatalf("diagnostics were written to stdout: %q", stdout)
+	}
+	if !strings.Contains(string(stderr), "Error executing nested command") {
+		t.Fatalf("expected parser error on stderr, got %q", stderr)
+	}
+	if strings.Contains(string(stderr), "parse failed") {
+		t.Fatalf("default ErrorLevel exposed tokenizer warning: %q", stderr)
+	}
+}
+
+func TestFatalDiagnosticsUseStderr(t *testing.T) {
+	if mode := os.Getenv("COMPILEDB_FATAL_DIAGNOSTIC_HELPER"); mode != "" {
+		switch mode {
+		case "internal":
+			os.Args = []string{"compiledb", "--parse", "-", "--regex-compile", "[", "--output", os.Getenv("COMPILEDB_FATAL_OUTPUT")}
+		case "action":
+			os.Args = []string{"compiledb", "--encoding", "latin1", "make"}
+		case "usage":
+			os.Args = []string{"compiledb", "--definitely-invalid"}
+		}
+		main()
+		return
+	}
+
+	for name, want := range map[string]string{
+		"internal": "invalid parser regex",
+		"action":   "unsupported encoding",
+		"usage":    "Incorrect Usage",
+	} {
+		t.Run(name, func(t *testing.T) {
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatalf("resolve test executable failed: %v", err)
+			}
+			cmd := exec.Command(executable, "-test.run=^TestFatalDiagnosticsUseStderr$")
+			cmd.Env = append(os.Environ(),
+				"COMPILEDB_FATAL_DIAGNOSTIC_HELPER="+name,
+				"COMPILEDB_FATAL_OUTPUT="+filepath.Join(t.TempDir(), "compile_commands.json"),
+			)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err == nil {
+				t.Fatal("fatal diagnostic helper exited successfully")
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("fatal diagnostic was written to stdout: %q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), want) {
+				t.Fatalf("expected %q on stderr, got %q", want, stderr.String())
+			}
+		})
+	}
+}
+
+func TestHelpUsesStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := newApp()
+	app.Writer = &stdout
+	app.ErrWriter = &stderr
+	if err := app.Run([]string{"compiledb", "--help"}); err != nil {
+		t.Fatalf("show help failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "USAGE:") {
+		t.Fatalf("help was not written to stdout: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("help wrote to stderr: %q", stderr.String())
+	}
+}
+
+func TestMakeFailureDiagnosticsUseStderr(t *testing.T) {
+	if mode := os.Getenv("COMPILEDB_MAKE_FAILURE_HELPER"); mode != "" {
+		switch mode {
+		case "dry-run":
+			os.Args = []string{"compiledb", "--no-build", "--output", os.Getenv("COMPILEDB_MAKE_FAILURE_OUTPUT"), "make"}
+		case "real":
+			os.Args = []string{"compiledb", "--output", os.Getenv("COMPILEDB_MAKE_FAILURE_OUTPUT"), "make"}
+		}
+		main()
+		return
+	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable failed: %v", err)
+	}
+	for name, test := range map[string]struct {
+		path   string
+		want   string
+		status int
+	}{
+		"dry-run": {path: t.TempDir(), want: "dry-run make failed", status: 127},
+		"real":    {path: makeFailureTestPath(t), want: "make failed with status 7", status: 7},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(executable, "-test.run=^TestMakeFailureDiagnosticsUseStderr$")
+			cmd.Env = replaceTestEnvironment(os.Environ(), "PATH", test.path)
+			cmd.Env = append(cmd.Env,
+				"COMPILEDB_MAKE_FAILURE_HELPER="+name,
+				"COMPILEDB_MAKE_FAILURE_OUTPUT="+filepath.Join(t.TempDir(), "compile_commands.json"),
+			)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			var exitError *exec.ExitError
+			if !errors.As(err, &exitError) || exitError.ExitCode() != test.status {
+				t.Fatalf("unexpected Make failure status: want %d, got %v", test.status, err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Make failure diagnostic was written to stdout: %q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("expected %q on stderr, got %q", test.want, stderr.String())
+			}
+		})
+	}
+}
+
+func makeFailureTestPath(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	script := filepath.Join(directory, "make")
+	contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*) exit 0 ;;
+  *) exit 7 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake Make failed: %v", err)
+	}
+	return directory
+}
+
+func replaceTestEnvironment(environment []string, name, value string) []string {
+	prefix := name + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, variable := range environment {
+		if !strings.HasPrefix(variable, prefix) {
+			result = append(result, variable)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 func TestOverwriteFlagsReplaceExistingDatabase(t *testing.T) {

@@ -217,7 +217,7 @@ func (t *Tool) MakeWrap(args []string) {
 			} else {
 				dryRunStatus = commandExitCode(err)
 			}
-			t.Logger.Warnf("dry-run make failed: %v", err)
+			t.Logger.Errorf("dry-run make failed: %v", err)
 			return
 		}
 
@@ -251,7 +251,7 @@ func (t *Tool) MakeWrap(args []string) {
 			}
 			if !errors.Is(buildErr, exec.ErrWaitDelay) && !errors.Is(buildErr, errProcessOutputIncomplete) {
 				buildStatus = commandExitCode(buildErr)
-				fmt.Fprintf(makeStdout, "make failed! errorCode: %d\n", buildStatus)
+				t.Logger.Errorf("make failed with status %d: %v", buildStatus, buildErr)
 			}
 		}
 	}

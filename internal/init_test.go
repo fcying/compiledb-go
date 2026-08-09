@@ -542,7 +542,11 @@ func TestWriteJSONStrictFiltersMergedDatabase(t *testing.T) {
 		{"directory": tmpDir, "command": "cc -c keep.c", "file": "keep.c", "output": "keep.o"},
 		{"directory": tmpDir, "command": "cc -c stale.c", "file": "stale.c"},
 		{"directory": notDirectory, "command": "cc -c child.c", "file": "child.c"},
+		{"directory": tmpDir, "command": "cc -c source-dir.c", "file": "source-dir.c"},
 	})
+	if err := os.Mkdir(filepath.Join(tmpDir, "source-dir.c"), 0o755); err != nil {
+		t.Fatalf("create source-like directory failed: %v", err)
+	}
 
 	tool := newTestTool(t, Config{OutputFile: outputFile})
 	commands := []Command{

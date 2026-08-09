@@ -10,7 +10,7 @@
 ## Parser And Make Wrapper Contracts
 
 - Parser behavior depends on working-directory tracking. It follows Make enter/leave messages, `make -C`, and inline `cd`. Parsing a file starts relative to that log file's directory; `--parse -` reads stdin and starts at the current working directory.
-- Strict mode is the default: a parsed source is omitted unless it exists relative to the tracked directory. Tests commonly use `NoStrict: true` because `tests/build.log` contains `/opt/compiledb_test/...` paths.
+- Strict mode is the default: a parsed source is omitted unless it resolves to a regular file relative to the tracked directory. Symlinks to regular files are accepted. Tests commonly use `NoStrict: true` because `tests/build.log` contains `/opt/compiledb_test/...` paths.
 - The default option-aware scanner records compiler commands containing source inputs even without `-c`. Multi-source commands generate one entry per source; link-only commands without source inputs remain omitted.
 - `compiledb make` runs `make -Bnkw` for command discovery and, unless `--no-build` is set, runs the requested real Make command concurrently. The parser consumes dry-run output; real Make stdout/stderr is forwarded to the caller.
 - Real Make failure takes precedence over dry-run failure. If the real build succeeds but the dry run fails, the dry-run status is returned. Under `--no-build`, dry-run failure is returned directly.
@@ -19,8 +19,8 @@
 
 ## Logging And Output
 
-- The CLI explicitly routes its logrus logger to stdout, not stderr. Do not assume `Error`, `Warn`, or `Info` logs appear on stderr.
-- `--output -` writes JSON to stdout. Any new visible diagnostic can share stdout with that JSON, so add an explicit CLI test before introducing or changing non-debug logs.
+- The CLI explicitly routes its logrus logger and fatal diagnostics to stderr. Non-verbose mode uses `ErrorLevel`; verbose mode uses `DebugLevel`.
+- `--output -` writes JSON to stdout. Keep all diagnostics on stderr and add an explicit CLI test before introducing or changing non-debug logs.
 - File and stdout compilation database output both end with one newline.
 - During a normal `compiledb make`, parser logging is temporarily restricted while real Make output is streaming, then restored. Verify diagnostics through both direct parsing and the Make wrapper path.
 

@@ -17,7 +17,7 @@ type Config struct {
 	InputFile    string
 	OutputFile   string
 	BuildDir     string
-	Exclude      string
+	Exclude      []string
 	AddArgs      []string
 	RegexCompile string
 	RegexFile    string
@@ -273,7 +273,7 @@ func mergeCompilationDatabase(entries []json.RawMessage, strict bool, buildDir s
 				continue
 			}
 		}
-		if _, err := os.Stat(sourcePath); err == nil {
+		if strictSourceFile(sourcePath) == nil {
 			filtered = append(filtered, data)
 		}
 	}

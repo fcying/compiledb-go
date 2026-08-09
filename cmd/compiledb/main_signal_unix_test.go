@@ -31,7 +31,11 @@ func TestCompiledbAppSecondSignalForcesExit(t *testing.T) {
 	}
 
 	marker := filepath.Join(t.TempDir(), "started")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCompiledbAppSecondSignalForcesExit$")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable failed: %v", err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestCompiledbAppSecondSignalForcesExit$")
 	cmd.Env = append(os.Environ(), "COMPILEDB_SECOND_SIGNAL_HELPER=1", "COMPILEDB_SECOND_SIGNAL_MARKER="+marker)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	signal.Ignore(os.Interrupt)
@@ -93,7 +97,11 @@ func TestCompiledbAppFirstSignalCancelsFIFOInput(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatalf("create FIFO failed: %v", err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCompiledbAppFirstSignalCancelsFIFOInput$")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable failed: %v", err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestCompiledbAppFirstSignalCancelsFIFOInput$")
 	cmd.Env = append(os.Environ(),
 		"COMPILEDB_FIFO_SIGNAL_HELPER=1",
 		"COMPILEDB_FIFO_SIGNAL_PATH="+fifo,
