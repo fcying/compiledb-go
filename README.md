@@ -57,7 +57,7 @@ OPTIONS:
    --add-arg/-a value      Add an argument to each compiler command (repeat flag for multiple arguments).
    --command-style/-c      Output compilation database with single "command" string rather than the default "arguments" list of strings.
    --full-path             Write full path to the compiler executable.
-   --regex-compile value   Regular expressions to find compile (default: (?i)^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?)
+   --regex-compile value   Regular expressions to find compile (default: (?i)^(?:.*[/\\])?(?:[A-Za-z0-9_.+]+-)*(?:(?:gcc|g\+\+)(?:(?:-?[0-9]+(?:\.[0-9]+)*(?:-(?:posix|win32))?)|-(?:posix|win32)|-mp-[0-9]+(?:\.[0-9]+)*)?|clang(?:\+\+|-cl)?(?:-[0-9]+(?:\.[0-9]+)*)?|(?:cc|c\+\+)(?:-[0-9]+(?:\.[0-9]+)*)?)(?:\.exe)?$)
    --regex-file value      Regular expressions to find file (default: ^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$))
    --help/-h               show help
    
@@ -113,7 +113,11 @@ compiler is changed by shell, ccache, icecc, or launcher configuration. Compiler
 dynamic-loader injection environment variables also disable probing rather than bypassing these
 checks. Compiler commands containing source inputs are recorded even when they do not use `-c`,
 matching the original Python implementation. Multi-source commands generate one database entry
-for each source instead of dropping all but the last one. Ordinary diagnostic `-W` options are ignored by the probe:
+for each source instead of dropping all but the last one. The default matcher accepts compiler
+drivers, including cross-prefixed and versioned GCC/Clang names, while excluding source-processing
+tools such as `clang-format` and `clang-tidy`. Explicit `time` and `nice` launchers are supported;
+arbitrary command prefixes are not scanned because output commands such as `echo gcc ...` must not
+be treated as compilations. Ordinary diagnostic `-W` options are ignored by the probe:
 ```bash
 $ compiledb --macros make
 ```
@@ -145,6 +149,8 @@ Build-log backtick expressions outside single quotes are executed once with `sh 
 command directory; their output is treated as argument data and is not re-evaluated as shell source.
 Unsupported shell constructs and conditionals whose execution cannot be
 determined safely are skipped rather than guessed. Do not parse untrusted build logs.
+With `--no-strict`, a simple inline `cd` updates the tracked directory without requiring that path
+to exist on the parser host, which allows logs captured on another machine to retain their cwd.
 Interrupting the CLI cancels active Make, compiler-probe, and backtick subprocesses. On Unix,
 cancellation is forwarded to the subprocess group; on Windows, controlled subprocesses are placed
 in a Job Object. Output is forwarded through a cancellable relay, with the inherited-pipe drain

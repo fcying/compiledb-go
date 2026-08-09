@@ -457,6 +457,28 @@ func TestCompilationDatabaseKeyUsesSlashSeparatedPaths(t *testing.T) {
 	}
 }
 
+func TestWriteJSONKeepsParentSegmentKeysDistinct(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{
+		{"directory": "/opt/src", "command": "cc -c ../main.c", "file": "../main.c", "extension": map[string]any{"keep": true}},
+		{"directory": "/opt", "command": "cc -c main.c", "file": "main.c", "output": "main.o"},
+	})
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{}
+	tool.WriteJSON(outputFile, 0, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 2 {
+		t.Fatalf("raw parent-segment keys were normalized together: %#v", entries)
+	}
+	parent := findTestEntry(t, entries, "../main.c")
+	if extension, ok := parent["extension"].(map[string]any); !ok || extension["keep"] != true {
+		t.Fatalf("raw parent-segment entry was not preserved: %#v", parent)
+	}
+	findTestEntry(t, entries, "main.c")
+}
+
 func TestWriteJSONOverwriteSkipsExistingDatabase(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")

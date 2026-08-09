@@ -143,7 +143,7 @@ func reportMakeOutputError(logger *logrus.Logger, err error) bool {
 	if !errors.Is(err, exec.ErrWaitDelay) && !errors.Is(err, errProcessOutputIncomplete) {
 		return false
 	}
-	logger.Warnf("make output incomplete: %v", err)
+	logger.Errorf("make output incomplete: %v", err)
 	return true
 }
 
@@ -210,7 +210,7 @@ func (t *Tool) MakeWrap(args []string) {
 				err = cleanupErr
 			}
 		}
-		if err != nil {
+		if err != nil && !reportMakeOutputError(t.Logger, err) {
 			dryRunMakeErr = err
 			if t.operationContext().Err() != nil {
 				dryRunStatus = contextExitCode(t.operationContext())
