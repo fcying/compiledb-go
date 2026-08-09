@@ -53,9 +53,8 @@ OPTIONS:
    --no-build, -n             Only generates compilation db file.
    --verbose, -v              Print verbose messages.
    --no-strict, -S            Do not check if source files exist in the file system.
-   --macros value, -m value   Add compiler arguments to the compilation database (repeat flag for multiple entries).
-   --add-arg value            Add an argument to each compiler command (repeat flag for multiple arguments).
-   -a value                   Alias for --add-arg.
+   --macros, -m               Add predefined compiler macros to the compilation database. Compilers must be available from their working directory or PATH.
+   --add-arg/-a value         Add an argument to each compiler command (repeat flag for multiple arguments).
    --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
    --full-path                Write full path to the compiler executable.
    --regex-compile value      Regular expressions to find compile (default: (?i)^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?)
@@ -97,13 +96,23 @@ as main makefile (`-f` flag), starting the build from `build` directory (`-C` fl
 $ compiledb make -f core/main.mk -C build
 ```
 
-To add custom compiler arguments into generated entries, repeat `-m/--macros`:
+To query each compiler for its predefined macros and add them to generated entries, use
+`-m/--macros`. Compiler executables must be available from the command's working directory
+or `PATH`. The query preserves selected safe compiler options that affect built-in macros,
+such as `-std`, `-m32`, and `--target`. Macro probing is skipped for response files and
+unsupported macro-affecting or compiler-forwarding options because replaying them could use
+the wrong target configuration, overwrite build outputs, or load compiler plugins. It is also
+skipped for multi-source commands, multi-stage languages such as CUDA/HIP, and commands whose
+compiler is changed by shell, ccache, icecc, or launcher configuration. Compiler-control and
+dynamic-loader injection environment variables also disable probing rather than bypassing these
+checks. Multi-source commands still generate
+one database entry for each source. Ordinary diagnostic `-W` options are ignored by the probe:
 ```bash
-$ compiledb --macros='-DCSV=a,b' -m=-m32 make
+$ compiledb --macros make
 ```
 
-The equivalent `-a/--add-arg` option is available for migration to the dedicated compiler
-argument flag. Each flag value is appended as one argument without comma or shell-word splitting:
+To add custom compiler arguments into generated entries, repeat `-a/--add-arg`. Each flag
+value is appended as one argument without comma or shell-word splitting:
 ```bash
 $ compiledb --add-arg='-DCSV=a,b' -a=-m32 make
 ```
@@ -130,7 +139,7 @@ Build-log backtick expressions outside single quotes are executed once with `sh 
 command directory; their output is treated as argument data and is not re-evaluated as shell source.
 Unsupported shell constructs and conditionals whose execution cannot be
 determined safely are skipped rather than guessed. Do not parse untrusted build logs.
-Interrupting the CLI cancels active Make and backtick subprocesses. On Unix,
+Interrupting the CLI cancels active Make, compiler-probe, and backtick subprocesses. On Unix,
 cancellation is forwarded to the subprocess group; on Windows, controlled subprocesses are placed
 in a Job Object. Output is forwarded through a cancellable relay, with the inherited-pipe drain
 timeout starting only after Make exits. JSON stdout writes also observe cancellation instead of

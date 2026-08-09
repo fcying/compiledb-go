@@ -127,7 +127,7 @@ func TestEncodingFlagOverridesEnv(t *testing.T) {
 	}
 }
 
-func TestRepeatedMacrosBecomeSeparateArguments(t *testing.T) {
+func TestRepeatedAddArgsPreserveArguments(t *testing.T) {
 	oldWd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd failed: %v", err)
@@ -158,8 +158,11 @@ func TestRepeatedMacrosBecomeSeparateArguments(t *testing.T) {
 		"--parse", buildLog,
 		"--output", "-",
 		"--no-strict",
-		"-m", "-DTEST_BOARD",
-		"-m", "-m32",
+		"--add-arg", "-DCSV=a,b",
+		"-a", `-DNAME="hello world"`,
+		"--add-arg", `-DREGEX=\d+`,
+		"-a=-target",
+		"--add-arg=pi32v2",
 	}
 
 	runErr := app.Run(os.Args)
@@ -186,37 +189,49 @@ func TestRepeatedMacrosBecomeSeparateArguments(t *testing.T) {
 	}
 
 	args := commands[0].Arguments
-	if len(args) < 2 {
+	want := []string{"-DCSV=a,b", `-DNAME="hello world"`, `-DREGEX=\d+`, "-target", "pi32v2"}
+	if len(args) < len(want) {
 		t.Fatalf("arguments too short: %v", args)
 	}
-
-	if args[len(args)-2] != "-DTEST_BOARD" || args[len(args)-1] != "-m32" {
-		t.Fatalf("unexpected trailing args: %v", args)
+	for i, value := range want {
+		if got := args[len(args)-len(want)+i]; got != value {
+			t.Fatalf("unexpected trailing args: want %v, got %v", want, args)
+		}
 	}
 }
 
-func TestRepeatedAddArgsPreserveArguments(t *testing.T) {
-	app := newApp()
-	app.Action = func(ctx *cli.Context) error {
-		cfg, err := createConfig(ctx)
-		if err != nil {
-			return err
-		}
-		want := []string{"-DCSV=a,b", `-DNAME="hello world"`, `-DREGEX=\d+`, "-target", "pi32v2"}
-		if !slices.Equal(cfg.AddArgs, want) {
-			t.Fatalf("unexpected add args: want %v, got %v", want, cfg.AddArgs)
-		}
-		return nil
-	}
-	if err := app.Run([]string{
-		"compiledb",
-		"--add-arg", "-DCSV=a,b",
-		"-a", `-DNAME="hello world"`,
-		"--add-arg", `-DREGEX=\d+`,
-		"-a=-target",
-		"--add-arg=pi32v2",
-	}); err != nil {
-		t.Fatalf("CLI run failed: %v", err)
+func TestMacrosAndAddArgFlagsCreateConfig(t *testing.T) {
+	for name, arguments := range map[string][]string{
+		"long then short": {"compiledb", "-m", "--add-arg", "-DTEST_BOARD", "-a", "-m32"},
+		"short then long": {"compiledb", "-m", "-a", "-DTEST_BOARD", "--add-arg", "-m32"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := newApp()
+			app.Action = func(ctx *cli.Context) error {
+				cfg, err := createConfig(ctx)
+				if err != nil {
+					return err
+				}
+				if !cfg.Macros {
+					t.Fatal("expected -m to enable predefined macros")
+				}
+
+				want := []string{"-DTEST_BOARD", "-m32"}
+				if len(cfg.AddArgs) != len(want) {
+					t.Fatalf("unexpected add args: %v", cfg.AddArgs)
+				}
+				for i := range want {
+					if cfg.AddArgs[i] != want[i] {
+						t.Fatalf("unexpected add args: want %v, got %v", want, cfg.AddArgs)
+					}
+				}
+				return nil
+			}
+
+			if err := app.Run(arguments); err != nil {
+				t.Fatalf("CLI run failed: %v", err)
+			}
+		})
 	}
 }
 
@@ -241,8 +256,13 @@ func TestAddArgsDoNotLeakAcrossAppRuns(t *testing.T) {
 		}
 	}
 	want := [][]string{{"FIRST"}, nil, {"SECOND"}}
-	if !slices.EqualFunc(got, want, slices.Equal[[]string]) {
-		t.Fatalf("add arguments leaked across runs:\nwant: %#v\ngot:  %#v", want, got)
+	if len(got) != len(want) {
+		t.Fatalf("unexpected configs: %#v", got)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Fatalf("add arguments leaked across runs:\nwant: %#v\ngot:  %#v", want, got)
+		}
 	}
 }
 
@@ -267,6 +287,67 @@ func TestAddArgsDoNotLeakAcrossAppRunContexts(t *testing.T) {
 	}
 	if want := [][]string{{"FIRST"}, nil}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
 		t.Fatalf("add arguments leaked across RunContext calls:\nwant: %#v\ngot:  %#v", want, got)
+	}
+}
+
+func TestMacroFailureKeepsStdoutAsJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	buildLog := filepath.Join(tmpDir, "build.log")
+	if err := os.WriteFile(buildLog, []byte("definitely-missing-gcc -c main.c\n"), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe failed: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe failed: %v", err)
+	}
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+	})
+
+	app := newApp()
+	runErr := app.Run([]string{
+		"compiledb",
+		"--parse", buildLog,
+		"--output", "-",
+		"--no-strict",
+		"--macros",
+	})
+	if err := stdoutW.Close(); err != nil {
+		t.Fatalf("close stdout writer failed: %v", err)
+	}
+	if err := stderrW.Close(); err != nil {
+		t.Fatalf("close stderr writer failed: %v", err)
+	}
+	if runErr != nil {
+		t.Fatalf("CLI run failed: %v", runErr)
+	}
+
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout failed: %v", err)
+	}
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr failed: %v", err)
+	}
+	var commands []struct {
+		File string `json:"file"`
+	}
+	if err := json.Unmarshal(stdout, &commands); err != nil {
+		t.Fatalf("stdout should be valid JSON, got %q: %v", stdout, err)
+	}
+	if len(commands) != 1 || commands[0].File != "main.c" {
+		t.Fatalf("unexpected commands: %#v", commands)
+	}
+	if !strings.Contains(string(stderr), "failed to get predefined macros") {
+		t.Fatalf("expected macro failure on stderr, got %q", stderr)
 	}
 }
 

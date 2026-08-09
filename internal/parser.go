@@ -1115,10 +1115,7 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		}
 		files = []string{ConvertPath(filePath)}
 	}
-	addedArguments := make([]string, 0, len(t.Config.Macros)+len(t.Config.AddArgs))
-	addedArguments = append(addedArguments, t.Config.Macros...)
-	addedArguments = append(addedArguments, t.Config.AddArgs...)
-	arguments = insertCompilerArguments(arguments, invocation, addedArguments)
+	arguments = insertCompilerArguments(arguments, invocation, t.Config.AddArgs)
 	entryDirectory := applyCompilerWorkingDirectory(arguments, invocation, compilerWorkingDir)
 
 	filteredFiles := make([]string, 0, len(files))
@@ -1150,13 +1147,13 @@ func (t *Tool) processCompileCommand(command string, workingDir string, patterns
 		return nil
 	}
 
-	if t.Config.PredefinedMacros && len(files) == 1 && !multipleSources && invocation.probeDisabled == "" {
+	if t.Config.Macros && len(files) == 1 && !multipleSources && invocation.probeDisabled == "" {
 		macros := t.getPredefinedMacros(compilerArguments(arguments, invocation), files[0], entryDirectory)
 		withMacros := make([]string, 0, len(arguments)+len(macros))
 		withMacros = append(withMacros, arguments[:invocation.optionsStart]...)
 		withMacros = append(withMacros, macros...)
 		arguments = append(withMacros, arguments[invocation.optionsStart:]...)
-	} else if t.Config.PredefinedMacros && (multipleSources || invocation.probeDisabled != "") {
+	} else if t.Config.Macros && (multipleSources || invocation.probeDisabled != "") {
 		reason := invocation.probeDisabled
 		if reason == "" {
 			reason = "multiple source inputs are not supported"

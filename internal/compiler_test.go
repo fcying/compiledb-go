@@ -472,13 +472,13 @@ func TestPredefinedMacroResponseFileIsNotExecuted(t *testing.T) {
 func TestParseAddsAndCachesPredefinedMacrosByConfiguration(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
-		InputFile:        "stdin",
-		OutputFile:       outputFile,
-		RegexCompile:     RegexCompile,
-		RegexFile:        RegexFile,
-		NoStrict:         true,
-		PredefinedMacros: true,
-		AddArgs:          []string{"-DUSER=1"},
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       true,
+		AddArgs:      []string{"-DUSER=1"},
 	})
 
 	var calls [][]string
@@ -532,12 +532,12 @@ func TestPredefinedMacroFailureKeepsCommandsAndIsCached(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 			tool := newTestTool(t, Config{
-				InputFile:        "stdin",
-				OutputFile:       outputFile,
-				RegexCompile:     RegexCompile,
-				RegexFile:        RegexFile,
-				NoStrict:         true,
-				PredefinedMacros: true,
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+				Macros:       true,
 			})
 			var logs bytes.Buffer
 			tool.Logger.SetOutput(&logs)
@@ -584,13 +584,13 @@ func TestParseSkipsMacroProbeForCompilerOverrides(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 			tool := newTestTool(t, Config{
-				InputFile:        "stdin",
-				OutputFile:       outputFile,
-				RegexCompile:     RegexCompile,
-				RegexFile:        RegexFile,
-				NoStrict:         true,
-				PredefinedMacros: true,
-				FullPath:         true,
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+				Macros:       true,
+				FullPath:     true,
 			})
 			calls := 0
 			tool.compilerCommand = func(_ string, _ ...string) *exec.Cmd {
@@ -683,12 +683,12 @@ func TestRealCompilerPredefinedMacrosReplayWithWerror(t *testing.T) {
 					}
 					outputFile := filepath.Join(workingDir, "compile_commands.json")
 					tool := newTestTool(t, Config{
-						InputFile:        "stdin",
-						OutputFile:       outputFile,
-						BuildDir:         workingDir,
-						RegexCompile:     RegexCompile,
-						RegexFile:        RegexFile,
-						PredefinedMacros: true,
+						InputFile:    "stdin",
+						OutputFile:   outputFile,
+						BuildDir:     workingDir,
+						RegexCompile: RegexCompile,
+						RegexFile:    RegexFile,
+						Macros:       true,
 					})
 					tool.Parse([]string{compiler + " -Werror -c " + source})
 
@@ -721,14 +721,14 @@ func TestCCacheCommandSkipsPredefinedMacros(t *testing.T) {
 
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
-		InputFile:        "stdin",
-		OutputFile:       outputFile,
-		BuildDir:         projectDir,
-		RegexCompile:     RegexCompile,
-		RegexFile:        RegexFile,
-		NoStrict:         true,
-		PredefinedMacros: true,
-		FullPath:         true,
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       true,
+		FullPath:     true,
 	})
 	tool.Parse([]string{"ccache compiler_check=content ./toolchain/fake-gcc -c main.c"})
 

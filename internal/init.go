@@ -14,21 +14,20 @@ import (
 )
 
 type Config struct {
-	InputFile        string
-	OutputFile       string
-	BuildDir         string
-	Exclude          string
-	Macros           []string
-	AddArgs          []string
-	PredefinedMacros bool
-	RegexCompile     string
-	RegexFile        string
-	Encoding         string
-	CommandStyle     bool
-	FullPath         bool
-	NoBuild          bool
-	NoStrict         bool
-	Overwrite        bool
+	InputFile    string
+	OutputFile   string
+	BuildDir     string
+	Exclude      string
+	AddArgs      []string
+	RegexCompile string
+	RegexFile    string
+	Encoding     string
+	Macros       bool
+	CommandStyle bool
+	FullPath     bool
+	NoBuild      bool
+	NoStrict     bool
+	Overwrite    bool
 }
 
 type Tool struct {
