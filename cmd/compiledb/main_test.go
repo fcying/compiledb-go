@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fcying/compiledb-go/internal"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
@@ -64,7 +66,7 @@ func TestRelativeBuildDirIsStoredAsAbsolutePath(t *testing.T) {
 
 	app := newApp()
 	app.Action = func(ctx *cli.Context) error {
-		cfg, err := createConfig(ctx)
+		cfg, err := createConfig(ctx, false)
 		if err != nil {
 			return err
 		}
@@ -85,45 +87,128 @@ func TestRelativeBuildDirIsStoredAsAbsolutePath(t *testing.T) {
 	}
 }
 
-func TestInvalidEncodingFailsFast(t *testing.T) {
-	app := newApp()
-	os.Args = []string{
-		"compiledb",
-		"--encoding", "latin1",
-		"--parse", "../../tests/build.log",
-		"--output", filepath.Join(t.TempDir(), "compile_commands.json"),
-	}
-	if err := app.Run(os.Args); err == nil {
-		t.Fatal("expected invalid encoding error")
+func TestDirectParseIgnoresMakeOutputEncoding(t *testing.T) {
+	for name, test := range map[string]struct {
+		arguments []string
+		envValue  string
+	}{
+		"flag":        {arguments: []string{"--encoding", "latin1"}},
+		"environment": {envValue: "latin1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(encodingEnvVar, test.envValue)
+			tmpDir := t.TempDir()
+			buildLog := filepath.Join(tmpDir, "build.log")
+			if err := os.WriteFile(buildLog, []byte("cc -c main.c\n"), 0o644); err != nil {
+				t.Fatalf("write build log failed: %v", err)
+			}
+			arguments := append([]string{"compiledb"}, test.arguments...)
+			arguments = append(arguments,
+				"--parse", buildLog,
+				"--output", filepath.Join(tmpDir, "compile_commands.json"),
+				"--no-strict",
+			)
+			if err := newApp().Run(arguments); err != nil {
+				t.Fatalf("direct parse rejected unused Make encoding: %v", err)
+			}
+		})
 	}
 }
 
-func TestInvalidEncodingFromEnvFailsFast(t *testing.T) {
-	t.Setenv(encodingEnvVar, "latin1")
-
-	app := newApp()
-	os.Args = []string{
-		"compiledb",
-		"--parse", "../../tests/build.log",
-		"--output", filepath.Join(t.TempDir(), "compile_commands.json"),
-	}
-	if err := app.Run(os.Args); err == nil {
-		t.Fatal("expected invalid encoding from environment variable")
+func TestMakeValidatesOutputEncoding(t *testing.T) {
+	for name, test := range map[string]struct {
+		arguments []string
+		envValue  string
+	}{
+		"flag":        {arguments: []string{"--encoding", "latin1"}},
+		"environment": {envValue: "latin1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(encodingEnvVar, test.envValue)
+			app := newApp()
+			arguments := append([]string{"compiledb"}, test.arguments...)
+			arguments = append(arguments, "make")
+			if err := app.Run(arguments); err == nil {
+				t.Fatal("expected invalid Make output encoding error")
+			}
+		})
 	}
 }
 
-func TestEncodingFlagOverridesEnv(t *testing.T) {
+func TestMakeEncodingFlagOverridesEnv(t *testing.T) {
 	t.Setenv(encodingEnvVar, "latin1")
-
 	app := newApp()
-	os.Args = []string{
-		"compiledb",
-		"--encoding", "raw",
-		"--parse", "../../tests/build.log",
-		"--output", filepath.Join(t.TempDir(), "compile_commands.json"),
+	app.Commands[0].Action = func(ctx *cli.Context) error {
+		cfg, err := createConfig(ctx, true)
+		if err != nil {
+			return err
+		}
+		if cfg.Encoding != internal.EncodingRaw {
+			t.Fatalf("unexpected Make output encoding: %q", cfg.Encoding)
+		}
+		return nil
 	}
-	if err := app.Run(os.Args); err != nil {
+	if err := app.Run([]string{"compiledb", "--encoding", "raw", "make"}); err != nil {
 		t.Fatalf("expected --encoding to override environment value, got: %v", err)
+	}
+}
+
+func TestParseFlagUsesDashForStdin(t *testing.T) {
+	for name, arguments := range map[string][]string{
+		"default":       {"compiledb"},
+		"explicit dash": {"compiledb", "--parse", "-"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := newApp()
+			app.Action = func(ctx *cli.Context) error {
+				cfg, err := createConfig(ctx, false)
+				if err != nil {
+					return err
+				}
+				if cfg.InputFile != "-" {
+					t.Fatalf("expected stdin sentinel, got %q", cfg.InputFile)
+				}
+				return nil
+			}
+			if err := app.Run(arguments); err != nil {
+				t.Fatalf("CLI run failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseFlagCanReadFileNamedStdin(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "stdin"), []byte("cc -c main.c\n"), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	if err := newApp().Run([]string{
+		"compiledb", "--parse", "stdin", "--output", outputFile, "--no-strict",
+	}); err != nil {
+		t.Fatalf("CLI run failed: %v", err)
+	}
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read output failed: %v", err)
+	}
+	var commands []struct {
+		File string `json:"file"`
+	}
+	if err := json.Unmarshal(data, &commands); err != nil {
+		t.Fatalf("decode output failed: %v", err)
+	}
+	if len(commands) != 1 || commands[0].File != "main.c" {
+		t.Fatalf("unexpected commands: %#v", commands)
 	}
 }
 
@@ -208,7 +293,7 @@ func TestMacrosAndAddArgFlagsCreateConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			app := newApp()
 			app.Action = func(ctx *cli.Context) error {
-				cfg, err := createConfig(ctx)
+				cfg, err := createConfig(ctx, false)
 				if err != nil {
 					return err
 				}
@@ -239,7 +324,7 @@ func TestAddArgsDoNotLeakAcrossAppRuns(t *testing.T) {
 	app := newApp()
 	var got [][]string
 	app.Action = func(ctx *cli.Context) error {
-		cfg, err := createConfig(ctx)
+		cfg, err := createConfig(ctx, false)
 		if err != nil {
 			return err
 		}
@@ -270,7 +355,7 @@ func TestAddArgsDoNotLeakAcrossAppRunContexts(t *testing.T) {
 	app := newApp()
 	var got [][]string
 	app.Action = func(ctx *cli.Context) error {
-		cfg, err := createConfig(ctx)
+		cfg, err := createConfig(ctx, false)
 		if err != nil {
 			return err
 		}

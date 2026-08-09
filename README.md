@@ -21,7 +21,7 @@ It's aimed mainly at non-cmake (cmake already generates compilation database)
 large codebases. Inspired by projects like [YCM-Generator][ycm-gen] and [Bear][bear],
 but faster (mainly with large projects), since in most cases it **doesn't need a clean
 build** (as the mentioned tools do) to generate the compilation database file, to
-achieve this it uses the make options such as `-n`/`--dry-run` and `-k`/`--keep-going`
+achieve this it uses the make options such as `--dry-run/-n` and `--keep-going/-k`
 to extract the compile commands. Also, it's more **cross-compiling friendly** than
 YCM-generator's fake-toolchanin approach.
 
@@ -44,22 +44,22 @@ USAGE: compiledb [options] command [command options] [args]...
   its corresponding Compilation datAbase.
 
 OPTIONS:
-   --parse file, -p file      Build log file to parse compilation commands. (default: "stdin")
-   --output file, -o file     Output file, Use '-' to output to stdout (default: "compile_commands.json")
-   --overwrite, -f            Overwrite compile_commands.json instead of just updating it.
-   --build-dir Path, -d Path  Path to be used as initial build dir.
-   --exclude value, -e value  Regular expressions to exclude files.
-   --encoding value           Encoding used when printing wrapped make output: raw or gb18030 (default: "raw", env: COMPILEDB_ENCODING)
-   --no-build, -n             Only generates compilation db file.
-   --verbose, -v              Print verbose messages.
-   --no-strict, -S            Do not check if source files exist in the file system.
-   --macros, -m               Add predefined compiler macros to the compilation database. Compilers must be available from their working directory or PATH.
-   --add-arg/-a value         Add an argument to each compiler command (repeat flag for multiple arguments).
-   --command-style, -c        Output compilation database with single "command" string rather than the default "arguments" list of strings.
-   --full-path                Write full path to the compiler executable.
-   --regex-compile value      Regular expressions to find compile (default: (?i)^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?)
-   --regex-file value         Regular expressions to find file (default: ^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$))
-   --help, -h                 show help
+   --parse/-p file         Build log file to parse compilation commands, or '-' for stdin. (default: "-")
+   --output/-o file        Output file, Use '-' to output to stdout (default: "compile_commands.json")
+   --overwrite/-f          Overwrite compile_commands.json instead of just updating it.
+   --build-dir/-d Path     Path to be used as initial build dir.
+   --exclude/-e value      Regular expressions to exclude files.
+   --encoding value        Encoding used when printing wrapped make output: raw or gb18030 (default: "raw", env: COMPILEDB_ENCODING)
+   --no-build/-n           Only generates compilation db file.
+   --verbose/-v            Print verbose messages.
+   --no-strict/-S          Do not check if source files exist in the file system.
+   --macros/-m             Add predefined compiler macros to the compilation database. Compilers must be available from their working directory or PATH.
+   --add-arg/-a value      Add an argument to each compiler command (repeat flag for multiple arguments).
+   --command-style/-c      Output compilation database with single "command" string rather than the default "arguments" list of strings.
+   --full-path             Write full path to the compiler executable.
+   --regex-compile value   Regular expressions to find compile (default: (?i)^.*-?(gcc|clang|cc|g\+\+|c\+\+|clang\+\+)-?.*(\.exe)?)
+   --regex-file value      Regular expressions to find file (default: ^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$))
+   --help/-h               show help
    
 COMMANDS:
    make  Generates compilation database file for an arbitrary GNU Make...
@@ -73,8 +73,8 @@ By default, new commands update the existing compilation database. Entries are m
 their `directory` and `file`, and a newly generated entry replaces an existing entry for
 the same source file. Legacy relative directories that map to the configured build directory,
 and explicit Windows drive/UNC slash and case variants, are
-matched to their current representation without rewriting preserved JSON fields. Use `-f` or
-`--overwrite` to replace the database instead:
+matched to their current representation without rewriting preserved JSON fields. Use
+`--overwrite/-f` to replace the database instead:
 ```bash
 $ compiledb --overwrite make
 ```
@@ -91,13 +91,13 @@ $ compiledb make
 
 `compiledb` forwards all the options/arguments passed after `make` subcommand to GNU Make,
 so one can, for example, generate `compile_commands.json` using `core/main.mk`
-as main makefile (`-f` flag), starting the build from `build` directory (`-C` flag):
+as main makefile (`--file/-f`), starting the build from `build` directory (`--directory/-C`):
 ```bash
 $ compiledb make -f core/main.mk -C build
 ```
 
 To query each compiler for its predefined macros and add them to generated entries, use
-`-m/--macros`. Compiler executables must be available from the command's working directory
+`--macros/-m`. Compiler executables must be available from the command's working directory
 or `PATH`. The query preserves selected safe compiler options that affect built-in macros,
 such as `-std`, `-m32`, and `--target`. Macro probing is skipped for response files and
 unsupported macro-affecting or compiler-forwarding options because replaying them could use
@@ -112,7 +112,7 @@ for each source instead of dropping all but the last one. Ordinary diagnostic `-
 $ compiledb --macros make
 ```
 
-To add custom compiler arguments into generated entries, repeat `-a/--add-arg`. Each flag
+To add custom compiler arguments into generated entries, repeat `--add-arg/-a`. Each flag
 value is appended as one argument without comma or shell-word splitting:
 ```bash
 $ compiledb --add-arg='-DCSV=a,b' -a=-m32 make
@@ -120,8 +120,7 @@ $ compiledb --add-arg='-DCSV=a,b' -a=-m32 make
 
 By default, `compiledb make` generates the compilation database, runs the actual build
 command requested (acting as a make wrapper), and prints wrapped `make` output using raw
-stream forwarding. The build step can be skipped using the `-n`
-or `--no-build` options.
+stream forwarding. The build step can be skipped using `--no-build/-n`.
 ```bash
 $ compiledb -n make
 ```
@@ -162,8 +161,7 @@ $ compiledb make
 from arbitrary text files (or stdin), assuming it has a build log (ideally generated using
 `make -Bnwk` command), and generates the corresponding JSON Compilation database.
 
-For example, to generate the compilation database from `build-log.txt` file, using the `-p`
-or `--parse` options.
+For example, to generate the compilation database from `build-log.txt` using `--parse/-p`:
 ```bash
 $ compiledb --parse build-log.txt
 ```
@@ -171,6 +169,7 @@ $ compiledb --parse build-log.txt
 or its equivalent:
 ```bash
 $ compiledb < build-log.txt
+$ compiledb --parse - < build-log.txt
 ```
 
 Or even, to pipe make's output and print the compilation database to the standard output:
@@ -180,7 +179,7 @@ $ make -Bnwk | compiledb -o -
 
 By default `compiledb` generates a JSON compilation database in the "arguments" list
 [format](https://clang.llvm.org/docs/JSONCompilationDatabase.html). The "command" string
-format is also supported through the use of the `--command-style` or `-c` flag:
+format is also supported through `--command-style/-c`:
 ```bash
 $ compiledb --command-style make
 ```
@@ -207,10 +206,10 @@ could use it with some great tools, such as:
 - [Neovim][neovim] + [LanguageClient-neovim][lsp] + [cquery][cquery] + [deoplete][deoplete]
 - [Neovim][neovim] + [ALE][ale] + [ccls][ccls]
 
-Notice:
-- _Windows: tested on Windows 10 with cmd, wsl(Ubuntu), mingw32_
-- _Linux: tested only on Arch Linux and Ubuntu 18 so far_
-- _Mac: tested on macOS 10.13 and 10.14_
+Current release automation cross-builds Linux amd64/arm64, Windows amd64, and macOS arm64
+artifacts on an Ubuntu runner. Only the Linux amd64 artifact receives a `compiledb -h` runtime
+smoke check there; the workflow does not currently run the test suite or native Windows, macOS,
+or arm64 runtime tests.
 
 ## License
 GNU GPLv3

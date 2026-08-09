@@ -22,7 +22,7 @@ var (
 	RegexFile    string = `^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$)`
 
 	// We want to skip such lines from configure to avoid spurious MAKE expansion errors.
-	checkingMake = regexp.MustCompile(`^\s?checking whether .*(yes|no)$`)
+	checkingMake = regexp.MustCompile(`^checking whether .* sets \$\(\w+\)\.\.\. (yes|no)$`)
 )
 
 type parserPatterns struct {
@@ -1161,7 +1161,7 @@ func (t *Tool) Parse(buildLog []string) {
 	// Resolve initial working directory {{{
 	if t.Config.BuildDir != "" {
 		workingDir = t.Config.BuildDir
-	} else if t.Config.InputFile != "stdin" {
+	} else if !isStdinInput(t.Config.InputFile) {
 		absPath, _ := filepath.Abs(t.Config.InputFile)
 		workingDir = filepath.Dir(absPath)
 	} else {

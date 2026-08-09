@@ -397,8 +397,26 @@ func TestWriteJSONWritesEmptyArrayForZeroCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output failed: %v", err)
 	}
-	if string(data) != "[]" {
+	if string(data) != "[]\n" {
 		t.Fatalf("expected empty JSON array, got %q", string(data))
+	}
+}
+
+func TestConfigureMakeFilterMatchesOnlyVariableExpansionCheck(t *testing.T) {
+	for name, test := range map[string]struct {
+		line string
+		want bool
+	}{
+		"yes":            {line: "checking whether make sets $(MAKE)... yes", want: true},
+		"no":             {line: "checking whether gmake sets $(MAKE)... no", want: true},
+		"ordinary check": {line: "checking whether the compiler works... yes"},
+		"suffix text":    {line: "checking whether the compiler plays piano"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := checkingMake.MatchString(test.line); got != test.want {
+				t.Fatalf("unexpected configure filter result for %q: want %t, got %t", test.line, test.want, got)
+			}
+		})
 	}
 }
 
@@ -420,7 +438,7 @@ func TestParseWritesEmptyArrayWhenNoCommandsFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output failed: %v", err)
 	}
-	if string(data) != "[]" {
+	if string(data) != "[]\n" {
 		t.Fatalf("expected empty JSON array, got %q", string(data))
 	}
 }
@@ -443,7 +461,7 @@ func TestParseIgnoresCompilerLineWithoutSourceFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output failed: %v", err)
 	}
-	if string(data) != "[]" {
+	if string(data) != "[]\n" {
 		t.Fatalf("expected empty JSON array, got %q", string(data))
 	}
 }

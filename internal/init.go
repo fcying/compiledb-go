@@ -63,12 +63,16 @@ func (t *Tool) compilationDatabaseBuildDir() string {
 	if t.Config.BuildDir != "" {
 		return compilationDatabaseBuildDir(t.Config.BuildDir)
 	}
-	if t.Config.InputFile != "" && t.Config.InputFile != "stdin" {
+	if t.Config.InputFile != "" && !isStdinInput(t.Config.InputFile) {
 		if absolute, err := filepath.Abs(t.Config.InputFile); err == nil {
 			return ConvertPath(filepath.Dir(absolute))
 		}
 	}
 	return compilationDatabaseBuildDir("")
+}
+
+func isStdinInput(filename string) bool {
+	return filename == "-" || filename == "stdin"
 }
 
 type compilationDatabaseEntry struct {
@@ -320,6 +324,7 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 	if err != nil {
 		t.Logger.Fatalf("Error encoding JSON:%v", err)
 	}
+	jsonData = append(jsonData, '\n')
 
 	outfile, err := os.Create(filename)
 	if err != nil {
@@ -341,7 +346,7 @@ func (t *Tool) Generate() {
 		err      error
 	)
 
-	if t.Config.InputFile != "stdin" {
+	if !isStdinInput(t.Config.InputFile) {
 		var data []byte
 		data, err = readPathWithContext(t.operationContext(), t.Config.InputFile)
 		if err != nil {

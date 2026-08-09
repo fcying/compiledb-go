@@ -45,7 +45,7 @@ func TestGenerateFromStdinDoesNotPanic(t *testing.T) {
 	defer func() { os.Stdin = oldStdin }()
 
 	tool := newTestTool(t, Config{
-		InputFile:  "stdin",
+		InputFile:  "-",
 		OutputFile: outputFile,
 		NoStrict:   true,
 	})
@@ -600,6 +600,29 @@ func TestWriteJSONStdoutUsesOnlyCurrentEntries(t *testing.T) {
 		t.Fatalf("expected one deduplicated current entry, got %#v", entries)
 	}
 	assertTestArgument(t, entries[0], 1, "-DTWO")
+}
+
+func TestWriteJSONFileEndsWithOneNewline(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-c", "main.c"}, File: "main.c"}}
+
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read output failed: %v", err)
+	}
+	if !strings.HasSuffix(string(data), "\n") || strings.HasSuffix(string(data), "\n\n") {
+		t.Fatalf("expected exactly one trailing newline, got %q", string(data))
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("decode output failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0]["file"] != "main.c" {
+		t.Fatalf("unexpected entries: %#v", entries)
+	}
 }
 
 func TestWriteJSONStdoutReturnsCanceledStatusWhenBlocked(t *testing.T) {
