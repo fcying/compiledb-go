@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -618,11 +617,10 @@ func TestMakeWrapPropagatesParserCancellation(t *testing.T) {
 	}
 }
 
-func TestMakeWrapReportsSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
+func TestMakeWrapGeneratesSourceCommandsWithoutCompileOnlyFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
 	script := filepath.Join(tmpDir, "fake-make.sh")
-	var logs bytes.Buffer
 
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'cc -o app a.c b.c'\n"), 0o755); err != nil {
 		t.Fatalf("write fake make failed: %v", err)
@@ -632,15 +630,21 @@ func TestMakeWrapReportsSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
 	makePath = script
 	defer func() { makePath = oldMakePath }()
 
-	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
-	tool.Logger.SetOutput(&logs)
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
 	tool.MakeWrap(nil)
 
 	if tool.StatusCode != 0 {
 		t.Fatalf("expected status code 0, got %d", tool.StatusCode)
 	}
-	if !strings.Contains(logs.String(), "source files found without -c; command ignored") {
-		t.Fatalf("expected missing -c warning, got %q", logs.String())
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].File != "a.c" || commands[1].File != "b.c" {
+		t.Fatalf("expected one entry per source, got %#v", commands)
 	}
 }
 

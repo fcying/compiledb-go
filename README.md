@@ -105,8 +105,9 @@ the wrong target configuration, overwrite build outputs, or load compiler plugin
 skipped for multi-source commands, multi-stage languages such as CUDA/HIP, and commands whose
 compiler is changed by shell, ccache, icecc, or launcher configuration. Compiler-control and
 dynamic-loader injection environment variables also disable probing rather than bypassing these
-checks. Multi-source commands still generate
-one database entry for each source. Ordinary diagnostic `-W` options are ignored by the probe:
+checks. Compiler commands containing source inputs are recorded even when they do not use `-c`,
+matching the original Python implementation. Multi-source commands generate one database entry
+for each source instead of dropping all but the last one. Ordinary diagnostic `-W` options are ignored by the probe:
 ```bash
 $ compiledb --macros make
 ```

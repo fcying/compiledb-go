@@ -448,10 +448,9 @@ func TestParseIgnoresCompilerLineWithoutSourceFile(t *testing.T) {
 	}
 }
 
-func TestParseWarnsForSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
+func TestParseGeneratesEntriesForSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
-	var logs bytes.Buffer
 
 	tool := newTestTool(t, Config{
 		InputFile:    "stdin",
@@ -460,26 +459,16 @@ func TestParseWarnsForSourceFilesWithoutCompileOnlyFlag(t *testing.T) {
 		RegexFile:    RegexFile,
 		NoStrict:     true,
 	})
-	tool.Logger.SetOutput(&logs)
 
 	tool.Parse([]string{"cc -Iinc -o app a.c b.c -lm"})
 
-	data, err := os.ReadFile(outputFile)
-	if err != nil {
-		t.Fatalf("read output failed: %v", err)
-	}
-	if string(data) != "[]" {
-		t.Fatalf("expected empty JSON array, got %q", string(data))
-	}
-	if !strings.Contains(logs.String(), "source files found without -c; command ignored") {
-		t.Fatalf("expected missing -c warning, got %q", logs.String())
-	}
-	if strings.Contains(logs.String(), "cc -Iinc -o app a.c b.c -lm") {
-		t.Fatalf("expected command to be omitted from warning, got %q", logs.String())
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].File != "a.c" || commands[1].File != "b.c" {
+		t.Fatalf("expected one entry per source, got %#v", commands)
 	}
 }
 
-func TestParseDoesNotTreatOptionOperandAsCompileOnlyFlag(t *testing.T) {
+func TestParseGeneratesEntryWhenCompileOnlyFlagIsAnOptionOperand(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
 		InputFile:    "stdin",
@@ -491,15 +480,15 @@ func TestParseDoesNotTreatOptionOperandAsCompileOnlyFlag(t *testing.T) {
 
 	tool.Parse([]string{"gcc -u -c main.c"})
 
-	if commands := readCompilerTestCommands(t, outputFile); len(commands) != 0 {
-		t.Fatalf("option operand was treated as compile-only flag: %#v", commands)
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "main.c" {
+		t.Fatalf("expected source command entry, got %#v", commands)
 	}
 }
 
-func TestParseDoesNotWarnForLinkOnlyOrUnrelatedOutput(t *testing.T) {
+func TestParseIgnoresLinkOnlyOrUnrelatedOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
-	var logs bytes.Buffer
 
 	tool := newTestTool(t, Config{
 		InputFile:    "stdin",
@@ -508,7 +497,6 @@ func TestParseDoesNotWarnForLinkOnlyOrUnrelatedOutput(t *testing.T) {
 		RegexFile:    RegexFile,
 		NoStrict:     true,
 	})
-	tool.Logger.SetOutput(&logs)
 
 	tool.Parse([]string{
 		"cc -o app a.o b.o -lm",
@@ -517,9 +505,6 @@ func TestParseDoesNotWarnForLinkOnlyOrUnrelatedOutput(t *testing.T) {
 		"echo cc -o app a.c b.c",
 	})
 
-	if strings.Contains(logs.String(), "source files found without -c; command ignored") {
-		t.Fatalf("unexpected missing -c warning: %q", logs.String())
-	}
 	commands := readCompilerTestCommands(t, outputFile)
 	if len(commands) != 1 || commands[0].File != "a.c" {
 		t.Fatalf("unrelated output produced compilation entries: %#v", commands)
