@@ -70,7 +70,10 @@ resulting in a command-line interface similar to [Bear][bear].
 
 By default, new commands update the existing compilation database. Entries are matched by
 their `directory` and `file`, and a newly generated entry replaces an existing entry for
-the same source file. Use `-f` or `--overwrite` to replace the database instead:
+the same source file. Legacy relative directories that map to the configured build directory,
+and explicit Windows drive/UNC slash and case variants, are matched to their current
+representation without rewriting preserved JSON fields. Use `-f` or `--overwrite` to replace
+the database instead:
 ```bash
 $ compiledb --overwrite make
 ```

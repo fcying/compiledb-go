@@ -102,6 +102,275 @@ func TestWriteJSONUpdatesExistingDatabase(t *testing.T) {
 	assertTestArgument(t, newEntry, 1, "-DTWO")
 }
 
+func TestWriteJSONReplacesLegacyPathRepresentations(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory failed: %v", err)
+	}
+	for name, test := range map[string]struct {
+		existing map[string]any
+		command  Command
+		buildDir string
+	}{
+		"relative build directory": {
+			existing: map[string]any{
+				"directory": "legacy-build",
+				"command":   "cc -DOLD -c main.c",
+				"file":      "main.c",
+				"output":    "main.o",
+			},
+			command: Command{
+				Directory: filepath.Join(cwd, "legacy-build"),
+				Arguments: []string{"cc", "-DNEW", "-c", "main.c"},
+				File:      "main.c",
+			},
+			buildDir: filepath.Join(cwd, "legacy-build"),
+		},
+		"relative build directory with trailing separator": {
+			existing: map[string]any{
+				"directory": "legacy-build/",
+				"command":   "cc -DOLD -c main.c",
+				"file":      "main.c",
+				"output":    "main.o",
+			},
+			command: Command{
+				Directory: filepath.Join(cwd, "legacy-build"),
+				Arguments: []string{"cc", "-DNEW", "-c", "main.c"},
+				File:      "main.c",
+			},
+			buildDir: filepath.Join(cwd, "legacy-build"),
+		},
+		"Windows separators and case": {
+			existing: map[string]any{
+				"directory": `C:\WORK`,
+				"command":   `cc -DOLD -c C:\WORK\main.c`,
+				"file":      `C:\WORK\main.c`,
+				"output":    "main.o",
+			},
+			command: Command{
+				Directory: "c:/work",
+				Arguments: []string{"cc", "-DNEW", "-c", "c:/work/main.c"},
+				File:      "c:/work/main.c",
+			},
+		},
+		"Windows trailing separator": {
+			existing: map[string]any{
+				"directory": `C:\WORK\`,
+				"command":   `cc -DOLD -c main.c`,
+				"file":      "main.c",
+				"output":    "main.o",
+			},
+			command: Command{
+				Directory: "c:/work",
+				Arguments: []string{"cc", "-DNEW", "-c", "main.c"},
+				File:      "main.c",
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+			writeTestJSON(t, outputFile, []map[string]any{test.existing})
+			tool := newTestTool(t, Config{OutputFile: outputFile, BuildDir: test.buildDir, NoStrict: true})
+			commands := []Command{test.command}
+
+			tool.WriteJSON(outputFile, 1, &commands)
+
+			entries := readTestDatabase(t, outputFile)
+			if len(entries) != 1 {
+				t.Fatalf("legacy and current paths were not merged: %#v", entries)
+			}
+			if _, found := entries[0]["output"]; found {
+				t.Fatalf("legacy entry was not completely replaced: %#v", entries[0])
+			}
+			assertTestArgument(t, entries[0], 1, "-DNEW")
+		})
+	}
+}
+
+func TestWriteJSONKeepsDistinctPOSIXColonPaths(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{
+		{"directory": "1:a", "command": "cc -c Main.c", "file": "Main.c", "output": "first.o"},
+		{"directory": "1:A", "command": "cc -c main.c", "file": "main.c", "output": "second.o"},
+	})
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{}
+
+	tool.WriteJSON(outputFile, 0, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 2 {
+		t.Fatalf("distinct POSIX colon paths were merged: %#v", entries)
+	}
+}
+
+func TestWriteJSONKeepsWindowsDirectoryAndPOSIXAbsoluteFileKeysDistinct(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{
+		{
+			"directory": "C:/build",
+			"command":   "cc -c /src/../main.c",
+			"file":      "/src/../main.c",
+			"extension": map[string]any{"raw": "preserve"},
+		},
+		{
+			"directory": "c:/build",
+			"command":   "cc -c src/../main.c",
+			"file":      "src/../main.c",
+			"output":    "relative.o",
+		},
+	})
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{}
+
+	tool.WriteJSON(outputFile, 0, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 2 {
+		t.Fatalf("distinct absolute and relative keys were merged: %#v", entries)
+	}
+	absolute := findTestEntry(t, entries, "/src/../main.c")
+	extension, ok := absolute["extension"].(map[string]any)
+	if !ok || extension["raw"] != "preserve" {
+		t.Fatalf("absolute entry fields were not preserved: %#v", absolute)
+	}
+	findTestEntry(t, entries, "src/../main.c")
+}
+
+func TestWriteJSONStrictUsesCurrentDirectoryWithoutBuildDir(t *testing.T) {
+	root := t.TempDir()
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get current directory failed: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("change current directory failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalCWD) })
+	if err := os.WriteFile("keep.c", nil, 0o644); err != nil {
+		t.Fatalf("create source failed: %v", err)
+	}
+	outputFile := filepath.Join(root, "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{{
+		"directory": "./",
+		"command":   "cc -c keep.c",
+		"file":      "keep.c",
+		"extension": map[string]any{"raw": "keep"},
+	}})
+	tool := newTestTool(t, Config{InputFile: "stdin", OutputFile: outputFile})
+	commands := []Command{}
+
+	tool.WriteJSON(outputFile, 0, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 1 {
+		t.Fatalf("strict merge dropped current-directory entry: %#v", entries)
+	}
+	extension, ok := entries[0]["extension"].(map[string]any)
+	if !ok || extension["raw"] != "keep" {
+		t.Fatalf("current-directory entry fields were not preserved: %#v", entries[0])
+	}
+}
+
+func TestWriteJSONStrictResolvesPOSIXColonRelativePath(t *testing.T) {
+	root := t.TempDir()
+	buildDir := filepath.Join(root, "1:a")
+	if err := os.Mkdir(buildDir, 0o755); err != nil {
+		t.Fatalf("create colon build directory failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "Main.c"), nil, 0o644); err != nil {
+		t.Fatalf("create colon source failed: %v", err)
+	}
+	outputFile := filepath.Join(root, "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{{
+		"directory": "1:a/",
+		"command":   "cc -c Main.c",
+		"file":      "Main.c",
+	}})
+	tool := newTestTool(t, Config{OutputFile: outputFile, BuildDir: buildDir})
+	commands := []Command{}
+
+	tool.WriteJSON(outputFile, 0, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 1 || entries[0]["file"] != "Main.c" {
+		t.Fatalf("strict merge dropped POSIX colon path: %#v", entries)
+	}
+}
+
+func TestWriteJSONLegacyRelativePathsDoNotDependOnCWD(t *testing.T) {
+	root := t.TempDir()
+	buildDir := filepath.Join(root, "project", "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatalf("create build directory failed: %v", err)
+	}
+	for _, name := range []string{"keep.c", "main.c"} {
+		if err := os.WriteFile(filepath.Join(buildDir, name), nil, 0o644); err != nil {
+			t.Fatalf("create source %s failed: %v", name, err)
+		}
+	}
+	outputFile := filepath.Join(root, "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{
+		{"directory": "project/build", "command": "cc -c keep.c", "file": "keep.c", "output": "keep.o"},
+		{"directory": "project/build", "command": "cc -DOLD -c main.c", "file": "main.c"},
+	})
+
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory failed: %v", err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("change working directory failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalCWD) })
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, BuildDir: buildDir})
+	commands := []Command{{Directory: buildDir, Arguments: []string{"cc", "-DNEW", "-c", "main.c"}, File: "main.c"}}
+	tool.WriteJSON(outputFile, 1, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 2 {
+		t.Fatalf("legacy relative paths depended on process cwd: %#v", entries)
+	}
+	if findTestEntry(t, entries, "keep.c")["output"] != "keep.o" {
+		t.Fatalf("strict merge dropped the existing relative entry: %#v", entries)
+	}
+	assertTestArgument(t, findTestEntry(t, entries, "main.c"), 1, "-DNEW")
+}
+
+func TestWriteJSONKeepsDistinctPOSIXBackslashPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, `src\main.c`), nil, 0o644); err != nil {
+		t.Fatalf("create backslash source failed: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "src"), 0o755); err != nil {
+		t.Fatalf("create source directory failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "src", "main.c"), nil, 0o644); err != nil {
+		t.Fatalf("create slash source failed: %v", err)
+	}
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{{
+		"directory": tmpDir,
+		"command":   `cc -c 'src\main.c'`,
+		"file":      `src\main.c`,
+		"output":    "backslash.o",
+	}})
+
+	tool := newTestTool(t, Config{OutputFile: outputFile})
+	commands := []Command{{Directory: tmpDir, Arguments: []string{"cc", "-c", "src/main.c"}, File: "src/main.c"}}
+	tool.WriteJSON(outputFile, 1, &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 2 {
+		t.Fatalf("distinct POSIX paths were merged: %#v", entries)
+	}
+	if findTestEntry(t, entries, `src\main.c`)["output"] != "backslash.o" {
+		t.Fatalf("backslash entry fields were not preserved: %#v", entries)
+	}
+	findTestEntry(t, entries, "src/main.c")
+}
+
 func TestCompilationDatabaseKeyUsesSlashSeparatedPaths(t *testing.T) {
 	for name, test := range map[string]struct {
 		entry compilationDatabaseEntry
