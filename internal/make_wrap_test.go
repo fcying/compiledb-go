@@ -648,6 +648,38 @@ func TestMakeWrapGeneratesSourceCommandsWithoutCompileOnlyFlag(t *testing.T) {
 	}
 }
 
+func TestMakeWrapRecoversFromParserCommandFailures(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	script := filepath.Join(tmpDir, "fake-make.sh")
+	contents := `#!/bin/sh
+printf "%s\n" "gcc -c 'broken.c"
+printf "%s\n" 'gcc -I` + "`false`" + ` -c backtick.c'
+printf "%s\n" 'gcc -c valid.c'
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+
+	oldMakePath := makePath
+	makePath = script
+	defer func() { makePath = oldMakePath }()
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("recoverable Make parser failure stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
 func TestMakeWrapNoBuildAddsPredefinedMacrosAndArguments(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")

@@ -969,7 +969,7 @@ func TestParseUsesCompilerWorkingDirectory(t *testing.T) {
 
 func TestParseFiltersSourcesBeforeMacroProbe(t *testing.T) {
 	for name, config := range map[string]Config{
-		"excluded": {NoStrict: true, Exclude: `excluded[.]c`},
+		"excluded": {NoStrict: true, Exclude: []string{`excluded[.]c`}},
 		"missing":  {},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -993,6 +993,55 @@ func TestParseFiltersSourcesBeforeMacroProbe(t *testing.T) {
 			tool.Parse([]string{"gcc -c " + file})
 			if calls != 0 {
 				t.Fatalf("filtered source started macro probe %d times", calls)
+			}
+		})
+	}
+}
+
+func TestParseExcludesMultiplePatternsOnlyFromPathStart(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		Exclude:      []string{`vendor/`, `generated/.*[.]c`},
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"cc -c vendor/one.c",
+		"cc -c generated/two.c",
+		"cc -c src/vendor/three.c",
+		"cc -c src/main.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].File != "src/vendor/three.c" || commands[1].File != "src/main.c" {
+		t.Fatalf("exclude patterns did not use path-prefix matching: %#v", commands)
+	}
+}
+
+func TestParseRecoversFromCommandFailures(t *testing.T) {
+	for name, failedCommand := range map[string]string{
+		"tokenizer": "gcc -c 'broken.c",
+		"backtick":  "gcc -I`false` -c broken.c",
+	} {
+		t.Run(name, func(t *testing.T) {
+			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+			tool := newTestTool(t, Config{
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+			})
+
+			tool.Parse([]string{failedCommand, "cc -c valid.c"})
+
+			commands := readCompilerTestCommands(t, outputFile)
+			if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+				t.Fatalf("recoverable parser failure stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
 			}
 		})
 	}
