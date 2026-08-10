@@ -262,6 +262,72 @@ func TestParseCancelsBacktickCommand(t *testing.T) {
 	}
 }
 
+func TestParseBackticksDoNotRequireExternalShell(t *testing.T) {
+	workingDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     workingDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	t.Setenv("PATH", t.TempDir())
+
+	tool.Parse([]string{
+		"gcc -I`pwd` -DVALUE=`printf pure-go` -c builtin.c",
+		"cc -c valid.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].File != "builtin.c" || commands[1].File != "valid.c" ||
+		!slices.Contains(commands[0].Arguments, "-I"+ConvertPath(workingDir)) ||
+		!slices.Contains(commands[0].Arguments, "-DVALUE=pure-go") {
+		t.Fatalf("embedded shell produced unexpected commands: %#v", commands)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("embedded shell emitted an unexpected diagnostic: %q", logs.String())
+	}
+	if tool.StatusCode != 0 {
+		t.Fatalf("embedded shell changed parser status to %d", tool.StatusCode)
+	}
+}
+
+func TestParseReportsMissingBacktickExecutable(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetOutput(&logs)
+	t.Setenv("PATH", t.TempDir())
+
+	tool.Parse([]string{
+		"gcc -I`compiledb-missing-backtick-executable` -c skipped.c",
+		"cc -c valid.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("missing backtick executable did not skip only the affected command: %#v", commands)
+	}
+	if !strings.Contains(logs.String(), "Error executing nested command") ||
+		!strings.Contains(logs.String(), "exit status 127") {
+		t.Fatalf("missing backtick execution diagnostic: %q", logs.String())
+	}
+	if tool.StatusCode != 0 {
+		t.Fatalf("recoverable backtick execution failure changed parser status to %d", tool.StatusCode)
+	}
+}
+
 func TestParseRespectsQuotedCommandSubstitutions(t *testing.T) {
 	projectDir := t.TempDir()
 	marker := filepath.Join(projectDir, "executed")
@@ -310,10 +376,6 @@ func TestParseDoesNotReevaluateBacktickOutput(t *testing.T) {
 
 func TestParsePreservesBacktickOutputAsData(t *testing.T) {
 	projectDir := t.TempDir()
-	emitter := filepath.Join(projectDir, "emit")
-	if err := os.WriteFile(emitter, []byte("#!/bin/sh\nprintf \"  a'b\\\\c  \"\n"), 0o755); err != nil {
-		t.Fatalf("write emitter failed: %v", err)
-	}
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
 		InputFile:    "stdin",
@@ -323,7 +385,7 @@ func TestParsePreservesBacktickOutputAsData(t *testing.T) {
 		RegexFile:    RegexFile,
 		NoStrict:     true,
 	})
-	nested := ShellJoinArgs([]string{emitter})
+	nested := `printf '  a\047b\134c  '`
 
 	tool.Parse([]string{
 		"gcc -DVALUE=`" + nested + "` -c unquoted.c",

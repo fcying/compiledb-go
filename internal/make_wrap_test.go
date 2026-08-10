@@ -205,6 +205,56 @@ esac
 	}
 }
 
+func TestMakeWrapBackticksDoNotRequireExternalShell(t *testing.T) {
+	for name, noBuild := range map[string]bool{
+		"normal":   false,
+		"no build": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			script := filepath.Join(tmpDir, "fake-make.sh")
+			contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*)
+    printf '%s\n' 'gcc -I` + "`pwd`" + ` -c builtin.c'
+    printf '%s\n' 'gcc app.o -o app'
+    printf '%s\n' 'echo ` + "`pwd`" + `'
+    printf '%s\n' 'cc -c valid.c'
+    ;;
+esac
+`
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatalf("write fake make failed: %v", err)
+			}
+			oldMakePath := makePath
+			makePath = script
+			defer func() { makePath = oldMakePath }()
+			t.Setenv("PATH", t.TempDir())
+
+			var logs bytes.Buffer
+			tool := newTestTool(t, Config{
+				OutputFile:   filepath.Join(tmpDir, "compile_commands.json"),
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoBuild:      noBuild,
+				NoStrict:     true,
+			})
+			tool.Logger.SetLevel(logrus.ErrorLevel)
+			tool.Logger.SetOutput(&logs)
+			tool.MakeWrap(nil)
+
+			commands := readCompilerTestCommands(t, tool.Config.OutputFile)
+			if tool.StatusCode != 0 || len(commands) != 2 || commands[0].File != "builtin.c" ||
+				commands[1].File != "valid.c" {
+				t.Fatalf("embedded shell changed MakeWrap result: status=%d commands=%#v", tool.StatusCode, commands)
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("embedded shell emitted an unexpected diagnostic: %q", logs.String())
+			}
+		})
+	}
+}
+
 func TestMakeWrapForcesSerializedDirectoryAwareDryRun(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
