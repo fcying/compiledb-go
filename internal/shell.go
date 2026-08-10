@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
@@ -24,6 +25,19 @@ func runShellProgram(ctx context.Context, program, workingDir string, stdout, st
 	if err != nil {
 		return err
 	}
+	return runParsedShellProgram(ctx, file, workingDir, expand.ListEnviron(os.Environ()...), nil,
+		nil, synchronizedWriter(stdout), synchronizedWriter(stderr))
+}
+
+func runParsedShellProgram(
+	ctx context.Context,
+	file *syntax.File,
+	workingDir string,
+	environment expand.Environ,
+	params []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+) error {
 	cleanup, err := syntax.NewParser(syntax.Variant(syntax.LangPOSIX)).Parse(
 		strings.NewReader(shellCleanupCommand), "")
 	if err != nil {
@@ -64,6 +78,26 @@ func runShellProgram(ctx context.Context, program, workingDir string, stdout, st
 			if ctx.Err() != nil {
 				return context.Cause(ctx)
 			}
+			if cmd.Process == nil && errors.Is(err, syscall.ENOEXEC) {
+				script, openErr := os.Open(executable)
+				if openErr != nil {
+					fmt.Fprintln(handler.Stderr, openErr)
+					return interp.ExitStatus(126)
+				}
+				file, parseErr := syntax.NewParser(syntax.Variant(syntax.LangPOSIX)).Parse(script, arguments[0])
+				closeErr := script.Close()
+				if parseErr != nil {
+					fmt.Fprintln(handler.Stderr, parseErr)
+					return interp.ExitStatus(2)
+				}
+				if closeErr != nil {
+					fmt.Fprintln(handler.Stderr, closeErr)
+					return interp.ExitStatus(126)
+				}
+				scriptEnvironment := expand.ListEnviron(shellEnvironment(handler.Env)...)
+				return runParsedShellProgram(ctx, file, handler.Dir, scriptEnvironment, arguments[1:],
+					handler.Stdin, handler.Stdout, handler.Stderr)
+			}
 			var exitError *exec.ExitError
 			if errors.As(err, &exitError) {
 				if status, ok := signaledExitCode(exitError); ok {
@@ -75,12 +109,16 @@ func runShellProgram(ctx context.Context, program, workingDir string, stdout, st
 		}
 	}
 
-	runner, err := interp.New(
+	options := []interp.RunnerOption{
 		interp.Dir(workingDir),
-		interp.Env(expand.ListEnviron(os.Environ()...)),
-		interp.StdIO(nil, synchronizedWriter(stdout), synchronizedWriter(stderr)),
+		interp.Env(environment),
+		interp.StdIO(stdin, stdout, stderr),
 		interp.ExecHandlers(execHandler),
-	)
+	}
+	if params != nil {
+		options = append(options, interp.Params(append([]string{"--"}, params...)...))
+	}
+	runner, err := interp.New(options...)
 	if err != nil {
 		return err
 	}

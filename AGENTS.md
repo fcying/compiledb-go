@@ -42,7 +42,7 @@
 - Focus a test with `go test ./internal -run '^TestName$'` or `go test ./cmd/compiledb -run '^TestName$'`.
 - Build without leaving a repository artifact using `go build -o /tmp/compiledb-go ./cmd/compiledb`. The root `compiledb` binary is ignored, but `/tmp` is preferred for manual verification.
 - Do not treat `just` as a normal build check. `.justfile` requires Nushell, and its default `build` recipe runs the CLI against `tests/build.log`, generating `compile_commands.json` rather than only compiling the binary.
-- The release workflow builds artifacts but does not run tests, vet, or race checks. Local verification remains required.
+- The release workflow gates Linux amd64 on gofmt, vet, tests, and race tests. Linux amd64/arm64, Windows amd64, and macOS arm64 artifacts are built natively and must run `--help` before publication. Local verification remains required.
 
 ## Test And Artifact Gotchas
 
@@ -54,6 +54,6 @@
 
 ## Release Gotchas
 
-- `Version` in `cmd/compiledb/main.go` is parsed directly by `.github/workflows/release.yml`. On `main`, a version different from the latest tag triggers a tagged release; non-release builds rewrite it to a `dev-...` version during CI.
+- `Version` in `cmd/compiledb/main.go` is parsed directly by `.github/workflows/release.yml`. On `main`, a version different from the latest tag triggers a tagged release; CI injects `dev-...` for non-release artifacts through a linker flag.
 - Do not change `Version` as part of unrelated work. When changing it intentionally, review the release workflow and tag state together.
-- The release workflow runs `go mod tidy` before building. Dependency changes must leave `go.mod` and `go.sum` tidy locally rather than relying on CI to rewrite them.
+- The Linux release gate runs `go mod tidy` and rejects changes to `go.mod` or `go.sum`. Dependency changes must leave both files tidy locally rather than relying on CI to rewrite them.

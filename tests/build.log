@@ -8,7 +8,7 @@ g++ -c test1.cpp \
 g++ -c test_none.c
 ccache-clang-11 -c /opt/compiledb_test/test2.c -o objs/test2.c.o
 
-cd /opt/compiledb_test && printf 't' 1>&2; gcc -c `test -f 'test_none.c' || echo 'src/'`test1.c `echo -DNESTED_CMD` &&
+cd /opt/compiledb_test && printf 't' 1>&2; gcc -c src/test1.c -DNESTED_CMD &&
 
 printf 't' 1>&2; cc -c -DINC=\"t.h\" ../test2.c
 
