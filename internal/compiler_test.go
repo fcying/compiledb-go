@@ -118,11 +118,12 @@ func TestCompilerFullPathUsesTrackedWorkingDirectory(t *testing.T) {
 func TestExecutableCandidatesUseWindowsPathExt(t *testing.T) {
 	for name, test := range map[string]struct {
 		filename string
+		pathExt  string
 		want     []string
 	}{
 		"no extension": {
 			filename: `C:\toolchain\gcc`,
-			want:     []string{`C:\toolchain\gcc`, `C:\toolchain\gcc.EXE`, `C:\toolchain\gcc.CMD`},
+			want:     []string{`C:\toolchain\gcc.EXE`, `C:\toolchain\gcc.CMD`},
 		},
 		"versioned name": {
 			filename: `C:\toolchain\clang-18.1`,
@@ -132,9 +133,18 @@ func TestExecutableCandidatesUseWindowsPathExt(t *testing.T) {
 			filename: `C:\toolchain\gcc.exe`,
 			want:     []string{`C:\toolchain\gcc.exe`},
 		},
+		"empty extension list": {
+			filename: `C:\toolchain\gcc`,
+			pathExt:  ";",
+			want:     []string{`C:\toolchain\gcc`},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := executableCandidates(test.filename, "windows", ".EXE;.CMD")
+			pathExt := test.pathExt
+			if pathExt == "" {
+				pathExt = ".EXE;.CMD"
+			}
+			got := executableCandidates(test.filename, "windows", pathExt)
 			if !slices.Equal(got, test.want) {
 				t.Fatalf("unexpected executable candidates:\nwant: %v\ngot:  %v", test.want, got)
 			}

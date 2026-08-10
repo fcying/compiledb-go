@@ -211,6 +211,269 @@ func TestMakeEncodingFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestParseMakeArguments(t *testing.T) {
+	for name, test := range map[string]struct {
+		input       []string
+		wantCommand string
+		wantArgs    []string
+		wantHelp    bool
+		wantError   bool
+	}{
+		"long": {
+			input:       []string{"--cmd", "gmake", "-f", "Makefile", "target"},
+			wantCommand: "gmake",
+			wantArgs:    []string{"-f", "Makefile", "target"},
+		},
+		"short": {
+			input:       []string{"-c", "mingw32-make", "-j2"},
+			wantCommand: "mingw32-make",
+			wantArgs:    []string{"-j2"},
+		},
+		"attached values and last wins": {
+			input:       []string{"-cgmake", "--cmd=/opt/make", "goal"},
+			wantCommand: "/opt/make",
+			wantArgs:    []string{"goal"},
+		},
+		"short cluster": {
+			input:       []string{"-xc", "gmake", "target"},
+			wantCommand: "gmake",
+			wantArgs:    []string{"-x", "target"},
+		},
+		"short cluster attached value": {
+			input:       []string{"-xcy", "target"},
+			wantCommand: "y",
+			wantArgs:    []string{"-x", "target"},
+		},
+		"short equals is value data": {
+			input:       []string{"-c=gmake"},
+			wantCommand: "=gmake",
+		},
+		"unknown options preserved": {
+			input:    []string{"--eval=all:;cc -c main.c", "-C", "build"},
+			wantArgs: []string{"--eval=all:;cc -c main.c", "-C", "build"},
+		},
+		"terminator is consumed": {
+			input:    []string{"--", "--cmd", "gmake", "-c", "target"},
+			wantArgs: []string{"--cmd", "gmake", "-c", "target"},
+		},
+		"help": {
+			input:    []string{"--help"},
+			wantHelp: true,
+		},
+		"help after terminator": {
+			input:    []string{"--", "--help"},
+			wantArgs: []string{"--help"},
+		},
+		"help in short cluster": {
+			input:    []string{"-xh"},
+			wantArgs: []string{"-x"},
+			wantHelp: true,
+		},
+		"Click compatible attached Make option": {
+			input:       []string{"-fcore/main.mk"},
+			wantCommand: "ore/main.mk",
+			wantArgs:    []string{"-f"},
+		},
+		"Click compatible cluster value": {
+			input:       []string{"-Csrc", "target"},
+			wantCommand: "target",
+			wantArgs:    []string{"-Csr"},
+		},
+		"missing long value": {
+			input:     []string{"--cmd"},
+			wantError: true,
+		},
+		"empty attached value falls back": {
+			input: []string{"--cmd="},
+		},
+		"empty separate value falls back": {
+			input: []string{"-c", ""},
+		},
+		"last empty value wins": {
+			input: []string{"-c", "gmake", "--cmd="},
+		},
+		"help value is invalid": {
+			input:     []string{"--help=x"},
+			wantError: true,
+		},
+		"help before missing command value": {
+			input:     []string{"--help", "-c"},
+			wantError: true,
+		},
+		"help cluster before missing command value": {
+			input:     []string{"-hc"},
+			wantError: true,
+		},
+		"help before invalid help value": {
+			input:     []string{"--help", "--help=value"},
+			wantError: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			command, arguments, help, err := parseMakeArguments(test.input)
+			if (err != nil) != test.wantError {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if command != test.wantCommand || !slices.Equal(arguments, test.wantArgs) || help != test.wantHelp {
+				t.Fatalf("unexpected parse result: command=%q args=%#v help=%v", command, arguments, help)
+			}
+		})
+	}
+}
+
+func TestHelpShowsMakeCommandOption(t *testing.T) {
+	for name, arguments := range map[string][]string{
+		"top level": {"compiledb", "--help"},
+		"make":      {"compiledb", "make", "--help"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var output bytes.Buffer
+			app := newApp()
+			app.Writer = &output
+			if err := app.Run(arguments); err != nil {
+				t.Fatalf("help failed: %v", err)
+			}
+			if !strings.Contains(output.String(), "--cmd") || !strings.Contains(output.String(), "-c") ||
+				!strings.Contains(output.String(), "Command to be used as make executable") {
+				t.Fatalf("make command option missing from help: %q", output.String())
+			}
+			if name == "make" {
+				if strings.Contains(output.String(), "COMMANDS:") || strings.Contains(output.String(), "help, h") ||
+					!strings.Contains(output.String(), "compiledb-go make [command options] [MAKE_ARGS]...") {
+					t.Fatalf("unexpected make help structure: %q", output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestMakeCommandOptionDoesNotConflictWithGlobalCommandStyle(t *testing.T) {
+	tmpDir := t.TempDir()
+	invocationFile := filepath.Join(tmpDir, "invocation")
+	makeExecutable := filepath.Join(tmpDir, "custom-make")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > ` + internal.ShellJoinArgs([]string{invocationFile}) + `
+echo 'cc -c main.c'
+`
+	if err := os.WriteFile(makeExecutable, []byte(script), 0o755); err != nil {
+		t.Fatalf("write custom Make failed: %v", err)
+	}
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	if err := newApp().Run([]string{
+		"compiledb",
+		"--no-build",
+		"-c",
+		"--output", outputFile,
+		"--no-strict",
+		"make",
+		"-c", makeExecutable,
+		"-f", "Project.mk",
+		"target",
+	}); err != nil {
+		t.Fatalf("CLI run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("read compilation database failed: %v", err)
+	}
+	var commands []internal.Command
+	if err := json.Unmarshal(data, &commands); err != nil {
+		t.Fatalf("decode compilation database failed: %v", err)
+	}
+	if len(commands) != 1 || commands[0].Command == "" || commands[0].Arguments != nil {
+		t.Fatalf("global command-style option was not applied: %#v", commands)
+	}
+
+	invocation, err := os.ReadFile(invocationFile)
+	if err != nil {
+		t.Fatalf("read Make invocation failed: %v", err)
+	}
+	arguments := strings.Split(strings.TrimSpace(string(invocation)), "\n")
+	if len(arguments) < 3 || !slices.Equal(arguments[:3], []string{"-f", "Project.mk", "target"}) {
+		t.Fatalf("Make arguments were not forwarded in order: %#v", arguments)
+	}
+	if slices.Contains(arguments, "-c") || slices.Contains(arguments, makeExecutable) {
+		t.Fatalf("compiledb make option was forwarded to Make: %#v", arguments)
+	}
+}
+
+func TestMakeCommandOptionTerminatorIsNotForwarded(t *testing.T) {
+	tmpDir := t.TempDir()
+	invocationFile := filepath.Join(tmpDir, "invocation")
+	makeExecutable := filepath.Join(tmpDir, "custom-make")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > ` + internal.ShellJoinArgs([]string{invocationFile}) + `
+echo 'cc -c main.c'
+`
+	if err := os.WriteFile(makeExecutable, []byte(script), 0o755); err != nil {
+		t.Fatalf("write custom Make failed: %v", err)
+	}
+	if err := newApp().Run([]string{
+		"compiledb", "--no-build", "--output", filepath.Join(tmpDir, "compile_commands.json"), "--no-strict",
+		"make", "--cmd", makeExecutable, "--", "--cmd", "gmake", "-c", "target",
+	}); err != nil {
+		t.Fatalf("CLI run failed: %v", err)
+	}
+
+	invocation, err := os.ReadFile(invocationFile)
+	if err != nil {
+		t.Fatalf("read Make invocation failed: %v", err)
+	}
+	arguments := strings.Split(strings.TrimSpace(string(invocation)), "\n")
+	if len(arguments) < 4 || !slices.Equal(arguments[:4], []string{"--cmd", "gmake", "-c", "target"}) {
+		t.Fatalf("arguments after wrapper terminator were not preserved: %#v", arguments)
+	}
+}
+
+func TestMakeCommandUsageError(t *testing.T) {
+	if mode := os.Getenv("COMPILEDB_MAKE_USAGE_HELPER"); mode != "" {
+		switch mode {
+		case "missing command":
+			os.Args = []string{"compiledb", "make", "-c"}
+		case "help before missing command":
+			os.Args = []string{"compiledb", "make", "--help", "-c"}
+		case "help cluster before missing command":
+			os.Args = []string{"compiledb", "make", "-hc"}
+		case "help before invalid help value":
+			os.Args = []string{"compiledb", "make", "--help", "--help=value"}
+		}
+		main()
+		return
+	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable failed: %v", err)
+	}
+	for name, want := range map[string]string{
+		"missing command":                     "Option '-c' requires an argument.",
+		"help before missing command":         "Option '-c' requires an argument.",
+		"help cluster before missing command": "Option '-c' requires an argument.",
+		"help before invalid help value":      "Option '--help' does not take a value.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(executable, "-test.run=^TestMakeCommandUsageError$")
+			cmd.Env = append(os.Environ(), "COMPILEDB_MAKE_USAGE_HELPER="+name)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			var exitError *exec.ExitError
+			if !errors.As(err, &exitError) || exitError.ExitCode() != 2 {
+				t.Fatalf("unexpected usage error status: %v", err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("usage error was written to stdout: %q", stdout.String())
+			}
+			if got := stderr.String(); strings.Count(got, want) != 1 || strings.Contains(got, "level=fatal") ||
+				strings.Contains(got, "USAGE:") {
+				t.Fatalf("unexpected usage error diagnostic: %q", got)
+			}
+		})
+	}
+}
+
 func TestParseFlagUsesDashForStdin(t *testing.T) {
 	for name, arguments := range map[string][]string{
 		"default":       {"compiledb"},
@@ -521,7 +784,7 @@ func TestMacroFailureKeepsStdoutAsJSON(t *testing.T) {
 func TestDefaultDiagnosticsUseStderr(t *testing.T) {
 	tmpDir := t.TempDir()
 	buildLog := filepath.Join(tmpDir, "build.log")
-	contents := "gcc -I`false` -c failed.c\ngcc -c 'tokenizer.c\ngcc -c valid.c\n"
+	contents := "gcc -I`false` -c failed.c\ngcc -c 'tokenizer.c\ngcc -I`pwd -c unmatched.c\ngcc -c valid.c\n"
 	if err := os.WriteFile(buildLog, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write build log failed: %v", err)
 	}
@@ -541,7 +804,7 @@ func TestDefaultDiagnosticsUseStderr(t *testing.T) {
 	runErr := newApp().Run([]string{
 		"compiledb",
 		"--parse", buildLog,
-		"--output", filepath.Join(tmpDir, "compile_commands.json"),
+		"--output", "-",
 		"--no-strict",
 	})
 	_ = stdoutW.Close()
@@ -557,14 +820,26 @@ func TestDefaultDiagnosticsUseStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read stderr failed: %v", err)
 	}
-	if len(stdout) != 0 {
-		t.Fatalf("diagnostics were written to stdout: %q", stdout)
+	var commands []internal.Command
+	if err := json.Unmarshal(stdout, &commands); err != nil {
+		t.Fatalf("stdout should be valid JSON, got %q: %v", stdout, err)
+	}
+	if len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("unexpected commands: %#v", commands)
 	}
 	if !strings.Contains(string(stderr), "Error executing nested command") {
 		t.Fatalf("expected parser error on stderr, got %q", stderr)
 	}
-	if strings.Contains(string(stderr), "parse failed") {
-		t.Fatalf("default ErrorLevel exposed tokenizer warning: %q", stderr)
+	if !strings.Contains(string(stderr), "skip malformed command at build log line 2") ||
+		!strings.Contains(string(stderr), "unterminated quote") {
+		t.Fatalf("expected tokenizer error on stderr, got %q", stderr)
+	}
+	if !strings.Contains(string(stderr), "skip malformed command at build log line 3") ||
+		!strings.Contains(string(stderr), "unterminated backtick") {
+		t.Fatalf("expected backtick tokenizer error on stderr, got %q", stderr)
+	}
+	if strings.Contains(string(stderr), "tokenizer.c") {
+		t.Fatalf("tokenizer diagnostic exposed command contents: %q", stderr)
 	}
 }
 

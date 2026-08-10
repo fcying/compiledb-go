@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -38,6 +39,169 @@ func TestMakeWrapNoBuildStopsOnDryRunFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
 		t.Fatalf("expected no compilation database to be written, stat err=%v", err)
+	}
+}
+
+func TestMakeWrapDoesNotParseDiscoveryStderr(t *testing.T) {
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "fake-make.sh")
+	contents := "#!/bin/sh\necho 'gcc -c stdout.c'\necho 'gcc -c stderr.c' >&2\n"
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = script
+	defer func() { makePath = oldMakePath }()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe failed: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe failed: %v", err)
+	}
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	t.Cleanup(func() { os.Stdout, os.Stderr = oldStdout, oldStderr })
+
+	tool := newTestTool(t, Config{
+		OutputFile:   "-",
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout failed: %v", err)
+	}
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr failed: %v", err)
+	}
+
+	var commands []Command
+	if err := json.Unmarshal(stdout, &commands); err != nil {
+		t.Fatalf("discovery stdout is not valid JSON: %q: %v", stdout, err)
+	}
+	if len(commands) != 1 || commands[0].File != "stdout.c" {
+		t.Fatalf("discovery stderr was parsed as commands: %#v", commands)
+	}
+	if !strings.Contains(string(stderr), "gcc -c stderr.c") {
+		t.Fatalf("discovery stderr was hidden: %q", stderr)
+	}
+}
+
+func TestMakeWrapDryRunFailureLeavesExistingDatabaseUntouched(t *testing.T) {
+	for name, noBuild := range map[string]bool{
+		"normal":   false,
+		"no build": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			outputFile := filepath.Join(tmpDir, "compile_commands.json")
+			writeTestJSON(t, outputFile, []any{map[string]any{
+				"directory": "/project",
+				"command":   "cc -c keep.c",
+				"file":      "keep.c",
+				"extension": map[string]any{"owner": "old"},
+			}})
+			script := filepath.Join(tmpDir, "fake-make.sh")
+			contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*)
+    echo 'gcc -c partial.c'
+    exit 2
+    ;;
+esac
+exit 0
+`
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatalf("write fake make failed: %v", err)
+			}
+			oldMakePath := makePath
+			makePath = script
+			defer func() { makePath = oldMakePath }()
+
+			tool := newTestTool(t, Config{
+				OutputFile: outputFile,
+				NoBuild:    noBuild,
+				NoStrict:   true,
+				Overwrite:  true,
+			})
+			tool.MakeWrap(nil)
+			if tool.StatusCode != 2 {
+				t.Fatalf("unexpected dry-run status: %d", tool.StatusCode)
+			}
+
+			entries := readTestDatabase(t, outputFile)
+			if len(entries) != 1 || entries[0]["file"] != "keep.c" {
+				t.Fatalf("dry-run failure changed existing database: %#v", entries)
+			}
+			if _, ok := entries[0]["extension"]; !ok {
+				t.Fatalf("dry-run failure lost existing raw fields: %#v", entries[0])
+			}
+		})
+	}
+}
+
+func TestMakeWrapReportsRecoverableTokenizerFailure(t *testing.T) {
+	for name, noBuild := range map[string]bool{
+		"normal":   false,
+		"no build": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			script := filepath.Join(tmpDir, "fake-make.sh")
+			contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*)
+    echo "gcc -DSECRET=value -c 'broken.c"
+    printf '\140printf gcc\140 -c \047expanded-broken.c\n'
+    printf 'gcc -I\140pwd -c unmatched.c\n'
+    echo 'cc -c valid.c'
+    ;;
+esac
+`
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatalf("write fake make failed: %v", err)
+			}
+			oldMakePath := makePath
+			makePath = script
+			defer func() { makePath = oldMakePath }()
+
+			var logs bytes.Buffer
+			tool := newTestTool(t, Config{
+				OutputFile:   filepath.Join(tmpDir, "compile_commands.json"),
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoBuild:      noBuild,
+				NoStrict:     true,
+			})
+			tool.Logger.SetLevel(logrus.ErrorLevel)
+			tool.Logger.SetOutput(&logs)
+			tool.MakeWrap(nil)
+
+			commands := readCompilerTestCommands(t, tool.Config.OutputFile)
+			if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+				t.Fatalf("recoverable tokenizer failure changed MakeWrap result: status=%d commands=%#v", tool.StatusCode, commands)
+			}
+			diagnostic := logs.String()
+			if !strings.Contains(diagnostic, "build log line 1") ||
+				!strings.Contains(diagnostic, "build log line 2") ||
+				!strings.Contains(diagnostic, "build log line 3") ||
+				!strings.Contains(diagnostic, "unterminated quote") ||
+				!strings.Contains(diagnostic, "unterminated backtick") {
+				t.Fatalf("missing tokenizer diagnostic: %q", diagnostic)
+			}
+			if strings.Contains(diagnostic, "SECRET") {
+				t.Fatalf("tokenizer diagnostic exposed command contents: %q", diagnostic)
+			}
+		})
 	}
 }
 
@@ -200,6 +364,126 @@ func TestMakeWrapResolvesMakeFromBuildDirectoryRelativePATH(t *testing.T) {
 	commands := readCompilerTestCommands(t, outputFile)
 	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "main.c" {
 		t.Fatalf("relative PATH did not resolve Make from build directory: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapUsesConfiguredMakeCommandForBuildAndDiscovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	invocations := filepath.Join(tmpDir, "invocations")
+	makeExecutable := filepath.Join(tmpDir, "custom-make")
+	contents := `#!/bin/sh
+printf '%s\n' "$*" >> ` + ShellJoinArgs([]string{invocations}) + `
+case " $* " in
+  *" -Bnkw "*) echo 'cc -c main.c' ;;
+esac
+`
+	if err := os.WriteFile(makeExecutable, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write custom Make failed: %v", err)
+	}
+
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		MakeCommand:  makeExecutable,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Encoding:     EncodingRaw,
+	})
+	tool.MakeWrap([]string{"-f", "Project.mk", "target"})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "main.c" {
+		t.Fatalf("configured Make command failed: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	data, err := os.ReadFile(invocations)
+	if err != nil {
+		t.Fatalf("read invocations failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || lines[0] != "-f Project.mk target" ||
+		!strings.HasPrefix(lines[1], "-f Project.mk target ") || !strings.Contains(lines[1], "-Bnkw") {
+		t.Fatalf("configured Make command did not receive both invocations: %q", data)
+	}
+}
+
+func TestMakeWrapMissingConfiguredMakeCommandPath(t *testing.T) {
+	tool := newTestTool(t, Config{
+		MakeCommand: filepath.Join(t.TempDir(), "missing-make"),
+		OutputFile:  filepath.Join(t.TempDir(), "compile_commands.json"),
+		NoBuild:     true,
+		NoStrict:    true,
+	})
+	tool.MakeWrap(nil)
+	if tool.StatusCode != 127 {
+		t.Fatalf("missing configured Make command returned %d instead of 127", tool.StatusCode)
+	}
+}
+
+func TestCommandExitCodeMissingWorkingDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	makeExecutable := filepath.Join(tmpDir, "custom-make")
+	if err := os.WriteFile(makeExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write custom Make failed: %v", err)
+	}
+	tool := newTestTool(t, Config{BuildDir: filepath.Join(tmpDir, "missing"), MakeCommand: makeExecutable})
+	cmd := tool.makeCommand()
+	err := cmd.Run()
+	if code := commandExitCode(err); code != 1 {
+		t.Fatalf("missing working directory returned %d instead of 1: %v", code, err)
+	}
+}
+
+func TestMakeWrapConfiguredMakeCommandPermissionError(t *testing.T) {
+	tool := newTestTool(t, Config{
+		MakeCommand: t.TempDir(),
+		OutputFile:  filepath.Join(t.TempDir(), "compile_commands.json"),
+		NoBuild:     true,
+		NoStrict:    true,
+	})
+	tool.MakeWrap(nil)
+	if tool.StatusCode != 1 {
+		t.Fatalf("invalid configured Make command returned %d instead of 1", tool.StatusCode)
+	}
+}
+
+func TestMakeCommandDoesNotResolveRelativePATHFromProcessDirectory(t *testing.T) {
+	oldWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWorkingDir) })
+
+	root := t.TempDir()
+	processDir := filepath.Join(root, "process")
+	buildDir := filepath.Join(root, "build")
+	toolDir := filepath.Join(processDir, "tools")
+	for _, directory := range []string{processDir, buildDir, toolDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatalf("create directory failed: %v", err)
+		}
+	}
+	marker := filepath.Join(root, "executed")
+	makeExecutable := filepath.Join(toolDir, "custom-make")
+	contents := "#!/bin/sh\ntouch " + ShellJoinArgs([]string{marker}) + "\n"
+	if err := os.WriteFile(makeExecutable, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake Make failed: %v", err)
+	}
+	if err := os.Chdir(processDir); err != nil {
+		t.Fatalf("change working directory failed: %v", err)
+	}
+	t.Setenv("PATH", "tools")
+
+	tool := newTestTool(t, Config{BuildDir: buildDir, MakeCommand: "custom-make"})
+	cmd := tool.makeCommand()
+	if !errors.Is(cmd.Err, exec.ErrNotFound) {
+		t.Fatalf("relative PATH unexpectedly resolved outside BuildDir: path=%q err=%v", cmd.Path, cmd.Err)
+	}
+	if err := cmd.Run(); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("unexpected command error: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("Make executable from process directory ran unexpectedly: %v", err)
 	}
 }
 
@@ -578,6 +862,84 @@ esac
 				t.Fatalf("unexpected status: want %d, got %d", test.want, tool.StatusCode)
 			}
 		})
+	}
+}
+
+func TestMakeWrapRunsDiscoveryAfterSuccessfulBuild(t *testing.T) {
+	tmpDir := t.TempDir()
+	buildFinished := filepath.Join(tmpDir, "build-finished")
+	script := filepath.Join(tmpDir, "fake-make.sh")
+	contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*)
+    test -f ` + ShellJoinArgs([]string{buildFinished}) + ` || exit 9
+    echo 'gcc -c ordered.c'
+    ;;
+  *)
+    sleep 0.1
+    touch ` + ShellJoinArgs([]string{buildFinished}) + `
+    ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = script
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Encoding:     EncodingRaw,
+	})
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "ordered.c" {
+		t.Fatalf("discovery ran before successful build: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapDoesNotRunDiscoveryAfterBuildFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	discoveryStarted := filepath.Join(tmpDir, "discovery-started")
+	script := filepath.Join(tmpDir, "fake-make.sh")
+	contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*)
+    touch ` + ShellJoinArgs([]string{discoveryStarted}) + `
+    echo 'gcc -c should-not-exist.c'
+    ;;
+  *) exit 7 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = script
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile: outputFile,
+		NoStrict:   true,
+		Encoding:   EncodingRaw,
+	})
+	tool.MakeWrap(nil)
+
+	if tool.StatusCode != 7 {
+		t.Fatalf("unexpected build failure status: %d", tool.StatusCode)
+	}
+	if _, err := os.Stat(discoveryStarted); !os.IsNotExist(err) {
+		t.Fatalf("discovery ran after build failure: %v", err)
+	}
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Fatalf("build failure wrote compilation database: %v", err)
 	}
 }
 

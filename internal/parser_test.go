@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-shellwords"
+	"github.com/sirupsen/logrus"
 )
 
 func TestParseMergesTrailingContinuation(t *testing.T) {
@@ -40,6 +41,92 @@ func TestParseMergesTrailingContinuation(t *testing.T) {
 	got := string(data)
 	if got == "[]" || got == "[]\n" {
 		t.Fatalf("expected at least one command, got %q", got)
+	}
+}
+
+func TestParsePreservesContinuationShellSemantics(t *testing.T) {
+	for name, test := range map[string]struct {
+		lines          []string
+		wantFile       string
+		wantArgument   string
+		wantCommands   int
+		wantDiagnostic string
+	}{
+		"concatenates words": {
+			lines:        []string{"gcc -DNAME=foo\\", "bar -c concat.c"},
+			wantFile:     "concat.c",
+			wantArgument: "-DNAME=foobar",
+			wantCommands: 1,
+		},
+		"preserves quoted whitespace": {
+			lines:        []string{`gcc "-DNAME=foo\`, ` bar" -c quoted.c`},
+			wantFile:     "quoted.c",
+			wantArgument: "-DNAME=foo bar",
+			wantCommands: 1,
+		},
+		"does not continue even backslashes": {
+			lines:        []string{`gcc -DVALUE=foo\\`, `-c even.c`},
+			wantCommands: 0,
+		},
+		"does not continue after trailing space": {
+			lines:        []string{"gcc -DVALUE=foo\\  ", `-c spaced.c`},
+			wantCommands: 0,
+		},
+		"blank physical line ends continuation": {
+			lines:        []string{"gcc -DVALUE=foo\\", "", `-c blank.c`},
+			wantCommands: 0,
+		},
+		"comment backslash does not continue": {
+			lines:        []string{"gcc -DVALUE=foo # comment\\", `-c comment.c`},
+			wantCommands: 0,
+		},
+		"continues after escaped space before hash": {
+			lines:        []string{`gcc -DVALUE=foo\ #bar \`, `-c escaped-comment.c`},
+			wantFile:     "escaped-comment.c",
+			wantArgument: "-DVALUE=foo #bar",
+			wantCommands: 1,
+		},
+		"preserves word state across physical lines": {
+			lines:        []string{`gcc -DVALUE=foo\`, `#bar \`, `-c continued-word.c`},
+			wantFile:     "continued-word.c",
+			wantArgument: "-DVALUE=foo#bar",
+			wantCommands: 1,
+		},
+		"drops unterminated continuation": {
+			lines:          []string{"gcc -c incomplete.c\\"},
+			wantCommands:   0,
+			wantDiagnostic: "unterminated line continuation",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+			var logs bytes.Buffer
+			tool := newTestTool(t, Config{
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+			})
+			tool.Logger.SetOutput(&logs)
+			tool.Parse(test.lines)
+
+			commands := readCompilerTestCommands(t, outputFile)
+			if len(commands) != test.wantCommands {
+				t.Fatalf("unexpected commands: want %d, got %#v", test.wantCommands, commands)
+			}
+			if test.wantCommands == 1 {
+				if commands[0].File != test.wantFile || !slices.Contains(commands[0].Arguments, test.wantArgument) {
+					t.Fatalf("continuation changed command: %#v", commands[0])
+				}
+			}
+			if test.wantDiagnostic != "" && !strings.Contains(logs.String(), test.wantDiagnostic) {
+				t.Fatalf("missing diagnostic %q in %q", test.wantDiagnostic, logs.String())
+			}
+			if tool.StatusCode != 0 {
+				t.Fatalf("recoverable continuation failure changed status: %d", tool.StatusCode)
+			}
+		})
 	}
 }
 
@@ -316,6 +403,83 @@ func TestParseHonorsKnownConditionalBranches(t *testing.T) {
 	if len(commands) != 2 || commands[0].File != "failed-cd-fallback.c" ||
 		commands[0].Directory != ConvertPath(projectDir) || commands[1].File != "true-and.c" {
 		t.Fatalf("conditional branches were parsed incorrectly: %#v", commands)
+	}
+}
+
+func TestParseFailsClosedForComplexShellStructures(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		`{ cd sub; gcc -c brace.c; }`,
+		`build() { :; gcc -c function.c; }`,
+		`if false; then :; gcc -c conditional.c; fi`,
+		`case value in value) gcc -c case.c;; esac`,
+		`echo $(printf '); gcc -c substitution.c;')`,
+		`( true;# comment ); gcc -c grouped-comment.c`,
+		`true ># comment; gcc -c redirected-comment.c`,
+		`true 2># comment; gcc -c fd-comment.c`,
+		`gcc -c valid.c`,
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("complex shell structure leaked commands: %#v", commands)
+	}
+}
+
+func TestParseStopsAtShellComments(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		`gcc -c commented-marker.c # make: Entering directory '/tmp'`,
+		`gcc -c following.c`,
+		`make -C sub && # incomplete conditional`,
+		`gcc -c skipped.c && # incomplete conditional`,
+		`gcc -c main.c # generated`,
+		`gcc -DVALUE='# literal' -c quoted.c # initialized with {0}`,
+		`gcc -DVALUE=foo#bar -c embedded.c`,
+		`gcc -DVALUE=foo\ #bar -c escaped-space.c`,
+		`gcc -DVALUE=foo\;#bar -c escaped-semicolon.c`,
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 7 {
+		t.Fatalf("shell comments changed command count: %#v", commands)
+	}
+	wantArguments := [][]string{
+		{"gcc", "-c", "commented-marker.c"},
+		{"gcc", "-c", "following.c"},
+		{"gcc", "-c", "main.c"},
+		{"gcc", "-DVALUE=# literal", "-c", "quoted.c"},
+		{"gcc", "-DVALUE=foo#bar", "-c", "embedded.c"},
+		{"gcc", "-DVALUE=foo #bar", "-c", "escaped-space.c"},
+		{"gcc", "-DVALUE=foo;#bar", "-c", "escaped-semicolon.c"},
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory failed: %v", err)
+	}
+	for i, want := range wantArguments {
+		if !slices.Equal(commands[i].Arguments, want) {
+			t.Fatalf("unexpected arguments for %s:\nwant: %v\ngot:  %v", commands[i].File, want, commands[i].Arguments)
+		}
+		if commands[i].Directory != ConvertPath(workingDir) {
+			t.Fatalf("commented Make command changed cwd to %q", commands[i].Directory)
+		}
 	}
 }
 
@@ -1172,6 +1336,54 @@ func TestParseRecoversFromCommandFailures(t *testing.T) {
 				t.Fatalf("recoverable parser failure stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
 			}
 		})
+	}
+}
+
+func TestParseReportsTokenizationFailureWithoutCommandContents(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.Parse([]string{
+		"echo ordinary 'output",
+		"gcc -DSECRET=value -c \\",
+		"'broken.c",
+		"gcc -I`pwd -c unmatched.c",
+		"cd `pwd",
+		"make -C `pwd",
+		"`printf gcc` -c 'expanded-broken.c",
+		"cc -c valid.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("tokenization failure changed parser result: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	for _, want := range []string{
+		"build log line 2",
+		"unterminated quote at byte 22",
+		"build log line 4",
+		"build log line 5",
+		"build log line 6",
+		"unterminated backtick",
+		"build log line 7",
+		"unterminated quote at byte 16",
+		"cwd",
+	} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("tokenization diagnostic lacks %q: %q", want, diagnostic)
+		}
+	}
+	if strings.Contains(diagnostic, "SECRET") || strings.Contains(diagnostic, "ordinary") {
+		t.Fatalf("tokenization diagnostic exposed command contents or logged unrelated output: %q", diagnostic)
 	}
 }
 

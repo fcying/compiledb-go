@@ -25,6 +25,7 @@ type Config struct {
 	Macros       bool
 	CommandStyle bool
 	FullPath     bool
+	MakeCommand  string
 	NoBuild      bool
 	NoStrict     bool
 	Overwrite    bool
@@ -341,13 +342,11 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 
 func (t *Tool) Generate() {
 	var (
-		buildLog []string
-		scanner  *bufio.Scanner
-		err      error
+		data []byte
+		err  error
 	)
 
 	if !isStdinInput(t.Config.InputFile) {
-		var data []byte
 		data, err = readPathWithContext(t.operationContext(), t.Config.InputFile)
 		if err != nil {
 			if t.operationContext().Err() != nil {
@@ -356,10 +355,9 @@ func (t *Tool) Generate() {
 			}
 			t.Logger.Fatalf("open %v failed!", t.Config.InputFile)
 		}
-		scanner = bufio.NewScanner(bytes.NewReader(data))
 		t.Logger.Debugf("Build from file")
 	} else {
-		data, err := readFileWithContext(t.operationContext(), os.Stdin)
+		data, err = readFileWithContext(t.operationContext(), os.Stdin)
 		if err != nil {
 			if t.operationContext().Err() != nil {
 				t.StatusCode = contextExitCode(t.operationContext())
@@ -367,20 +365,26 @@ func (t *Tool) Generate() {
 			}
 			t.Logger.Fatalf("read stdin failed: %v", err)
 		}
-		scanner = bufio.NewScanner(bytes.NewReader(data))
 		t.Logger.Debugf("Build from stdin")
 	}
 
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024*100)
-	for scanner.Scan() {
-		if t.operationContext().Err() != nil {
-			t.StatusCode = contextExitCode(t.operationContext())
-			return
-		}
-		buildLog = append(buildLog, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
+	buildLog, err := scanBuildLog(data)
+	if err != nil {
 		t.Logger.Fatalf("read build log failed: %v", err)
 	}
+	if t.operationContext().Err() != nil {
+		t.StatusCode = contextExitCode(t.operationContext())
+		return
+	}
 	t.Parse(buildLog)
+}
+
+func scanBuildLog(data []byte) ([]string, error) {
+	var lines []string
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 1024*1024), maxBuildLogLineSize)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	return lines, scanner.Err()
 }
