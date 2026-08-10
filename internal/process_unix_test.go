@@ -5,10 +5,10 @@ package internal
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,7 +20,7 @@ import (
 )
 
 func TestCommandExitCodeMapsUnixSignal(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "kill -TERM $$")
+	cmd := processUnixHelperCommand(nil, "terminate")
 	err := cmd.Run()
 	if code := commandExitCode(err); code != 128+int(syscall.SIGTERM) {
 		t.Fatalf("unexpected signal exit code: %d (%v)", code, err)
@@ -31,10 +31,11 @@ func TestConfigureMakeCommandCancelsProcessGroup(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "child.pid")
 	doneFile := filepath.Join(tmpDir, "child.done")
-	script := "sh -c 'trap \"echo terminated > " + doneFile + "; exit 0\" TERM; while :; do sleep 1; done' & " +
-		"echo $! > " + pidFile + "; wait"
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd := processUnixHelperCommand(ctx, "group-parent",
+		"COMPILEDB_TEST_PROCESS_PID_FILE="+pidFile,
+		"COMPILEDB_TEST_PROCESS_DONE_FILE="+doneFile,
+	)
 	configureMakeCommand(cmd, ctx)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start process group failed: %v", err)
@@ -93,7 +94,7 @@ func TestRunMakeCommandCancelsDescendantsAfterLeaderExit(t *testing.T) {
 	defer outputFile.Close()
 
 	ctx, cancel := context.WithCancelCause(context.Background())
-	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30 & echo $! > "+pidFile)
+	cmd := processUnixHelperCommand(ctx, "background-parent", "COMPILEDB_TEST_PROCESS_PID_FILE="+pidFile)
 	configureMakeCommand(cmd, ctx)
 	done := make(chan error, 1)
 	go func() {
@@ -198,7 +199,7 @@ func TestRunMakeCommandCancelsBlockedOutput(t *testing.T) {
 	defer outputWriter.Close()
 
 	ctx, cancel := context.WithCancelCause(context.Background())
-	cmd := exec.CommandContext(ctx, "sh", "-c", "exec dd if=/dev/zero bs=1048576 count=16 2>/dev/null")
+	cmd := processUnixHelperCommand(ctx, "write-output", "COMPILEDB_TEST_PROCESS_OUTPUT_SIZE=16777216")
 	configureMakeCommand(cmd, ctx)
 	done := make(chan error, 1)
 	go func() {
@@ -231,7 +232,7 @@ func TestRunMakeCommandDoesNotTimeOutActiveOutput(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "exec dd if=/dev/zero bs=1048576 count=4 2>/dev/null")
+	cmd := processUnixHelperCommand(ctx, "write-output", "COMPILEDB_TEST_PROCESS_OUTPUT_SIZE=4194304")
 	configureMakeCommand(cmd, ctx)
 	done := make(chan error, 1)
 	go func() {
@@ -269,12 +270,23 @@ func TestRunMakeCommandBoundsContinuousOutputAfterLeaderExit(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "continuous-output.pid")
 	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "(trap '' PIPE; while :; do printf x; sleep 0.02; done) & echo $! > "+pidFile)
+	cmd := processUnixHelperCommand(ctx, "continuous-parent", "COMPILEDB_TEST_PROCESS_PID_FILE="+pidFile)
 	configureMakeCommand(cmd, ctx)
 
+	type commandResult struct {
+		err          error
+		stopWatching func()
+	}
+	done := make(chan commandResult, 1)
+	go func() {
+		err, stopWatching := runMakeCommand(ctx, cmd, output, output, EncodingRaw)
+		done <- commandResult{err: err, stopWatching: stopWatching}
+	}()
+	waitForTestFile(t, pidFile)
 	start := time.Now()
-	err, stopWatching := runMakeCommand(ctx, cmd, output, output, EncodingRaw)
-	stopWatching()
+	completed := <-done
+	completed.stopWatching()
+	err = completed.err
 	if !errors.Is(err, errProcessOutputIncomplete) {
 		t.Fatalf("continuous inherited output returned %v", err)
 	}
@@ -284,12 +296,26 @@ func TestRunMakeCommandBoundsContinuousOutputAfterLeaderExit(t *testing.T) {
 	assertTestProcessExited(t, pidFile)
 }
 
-func TestBacktickWaitDelayTerminatesBackgroundProcess(t *testing.T) {
+func TestBacktickTerminatesUnwaitedBackgroundProcess(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "backtick-background.pid")
+	t.Setenv("COMPILEDB_TEST_BACKTICK_BACKGROUND_PID", pidFile)
+	helper := ShellJoinArgs([]string{os.Args[0], "-test.run=^TestBacktickBackgroundHelperProcess$"})
 	tool := newTestTool(t, Config{OutputFile: filepath.Join(tmpDir, "compile_commands.json"), BuildDir: tmpDir, NoStrict: true, RegexCompile: RegexCompile, RegexFile: RegexFile})
-	tool.Parse([]string{"gcc -I`sleep 30 & echo $! > " + pidFile + "; echo include` -c main.c"})
+	tool.Parse([]string{"gcc -I`" + helper + " & while [ ! -f " + ShellJoinArgs([]string{pidFile}) + " ]; do :; done; echo include` -c main.c"})
 	assertTestProcessExited(t, pidFile)
+}
+
+func TestBacktickBackgroundHelperProcess(t *testing.T) {
+	pidFile := os.Getenv("COMPILEDB_TEST_BACKTICK_BACKGROUND_PID")
+	if pidFile == "" {
+		return
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		os.Exit(2)
+	}
+	time.Sleep(30 * time.Second)
+	os.Exit(0)
 }
 
 func TestMacroProbeWaitDelayTerminatesBackgroundProcess(t *testing.T) {
@@ -308,14 +334,21 @@ func TestMacroProbeWaitDelayTerminatesBackgroundProcess(t *testing.T) {
 }
 
 func TestOutputProcessCommandTerminatesBackgroundProcesses(t *testing.T) {
-	for name, script := range map[string]string{
-		"redirected output": "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > %s; echo complete",
-		"nonzero leader":    "sleep 30 & echo $! > %s; exit 7",
+	for name, test := range map[string]struct {
+		status   int
+		redirect bool
+	}{
+		"redirected output": {redirect: true},
+		"nonzero leader":    {status: 7},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pidFile := filepath.Join(t.TempDir(), "background.pid")
 			ctx := context.Background()
-			cmd := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(script, pidFile))
+			cmd := processUnixHelperCommand(ctx, "output-parent",
+				"COMPILEDB_TEST_PROCESS_PID_FILE="+pidFile,
+				"COMPILEDB_TEST_PROCESS_STATUS="+strconv.Itoa(test.status),
+				"COMPILEDB_TEST_PROCESS_REDIRECT="+strconv.FormatBool(test.redirect),
+			)
 			configureProcessCommand(cmd, ctx)
 
 			_, err := outputProcessCommand(cmd, ctx)
@@ -340,7 +373,7 @@ func TestInjectedCompilerProbeReturnsWhenCanceled(t *testing.T) {
 	tool := newTestTool(t, Config{})
 	tool.Context = ctx
 	tool.compilerCommand = func(_ string, _ ...string) *exec.Cmd {
-		return exec.Command("sh", "-c", "printf started > "+startedFile+"; exec sleep 30")
+		return processUnixHelperCommand(nil, "probe-sleep", "COMPILEDB_TEST_PROCESS_STARTED_FILE="+startedFile)
 	}
 	done := make(chan []string, 1)
 	go func() {
@@ -396,6 +429,156 @@ func TestMakeWrapNoBuildTerminatesDryRunBackgroundProcesses(t *testing.T) {
 			assertTestProcessExited(t, pidFile)
 		})
 	}
+}
+
+func processUnixHelperCommand(ctx context.Context, mode string, environment ...string) *exec.Cmd {
+	arguments := []string{"-test.run=^TestProcessUnixHelperProcess$"}
+	var cmd *exec.Cmd
+	if ctx == nil {
+		cmd = exec.Command(os.Args[0], arguments...)
+	} else {
+		cmd = exec.CommandContext(ctx, os.Args[0], arguments...)
+	}
+	values := append([]string{"COMPILEDB_TEST_PROCESS_MODE=" + mode}, environment...)
+	cmd.Env = os.Environ()
+	for _, value := range values {
+		name, _, _ := strings.Cut(value, "=")
+		prefix := name + "="
+		cmd.Env = append([]string(nil), cmd.Env...)
+		for index := 0; index < len(cmd.Env); {
+			if strings.HasPrefix(cmd.Env[index], prefix) {
+				cmd.Env = append(cmd.Env[:index], cmd.Env[index+1:]...)
+				continue
+			}
+			index++
+		}
+		cmd.Env = append(cmd.Env, value)
+	}
+	return cmd
+}
+
+func TestProcessUnixHelperProcess(t *testing.T) {
+	mode := os.Getenv("COMPILEDB_TEST_PROCESS_MODE")
+	if mode == "" {
+		return
+	}
+
+	switch mode {
+	case "terminate":
+		signal.Reset(syscall.SIGTERM)
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			os.Exit(2)
+		}
+		time.Sleep(time.Second)
+		os.Exit(2)
+	case "group-parent":
+		cmd := inheritedProcessUnixHelperCommand("group-child",
+			"COMPILEDB_TEST_PROCESS_PID_FILE="+os.Getenv("COMPILEDB_TEST_PROCESS_PID_FILE"),
+			"COMPILEDB_TEST_PROCESS_DONE_FILE="+os.Getenv("COMPILEDB_TEST_PROCESS_DONE_FILE"),
+		)
+		if err := cmd.Run(); err != nil {
+			os.Exit(commandExitCode(err))
+		}
+		os.Exit(0)
+	case "group-child":
+		terminated := make(chan os.Signal, 1)
+		signal.Notify(terminated, syscall.SIGTERM)
+		if !writeProcessUnixHelperFile("COMPILEDB_TEST_PROCESS_PID_FILE", strconv.Itoa(os.Getpid())) {
+			os.Exit(2)
+		}
+		<-terminated
+		if !writeProcessUnixHelperFile("COMPILEDB_TEST_PROCESS_DONE_FILE", "terminated") {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	case "background-parent":
+		startProcessUnixHelperChild("sleep", false)
+	case "continuous-parent":
+		startProcessUnixHelperChild("continuous-output", false)
+	case "output-parent":
+		redirect, err := strconv.ParseBool(os.Getenv("COMPILEDB_TEST_PROCESS_REDIRECT"))
+		if err != nil {
+			os.Exit(2)
+		}
+		startProcessUnixHelperChild("sleep", redirect)
+		if _, err := os.Stdout.Write([]byte("complete\n")); err != nil {
+			os.Exit(2)
+		}
+		status, err := strconv.Atoi(os.Getenv("COMPILEDB_TEST_PROCESS_STATUS"))
+		if err != nil || status < 0 || status > 255 {
+			os.Exit(2)
+		}
+		os.Exit(status)
+	case "sleep":
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	case "write-output":
+		remaining, err := strconv.Atoi(os.Getenv("COMPILEDB_TEST_PROCESS_OUTPUT_SIZE"))
+		if err != nil || remaining < 0 {
+			os.Exit(2)
+		}
+		block := make([]byte, 64*1024)
+		for remaining > 0 {
+			size := min(remaining, len(block))
+			written, err := os.Stdout.Write(block[:size])
+			remaining -= written
+			if err != nil || written == 0 {
+				os.Exit(2)
+			}
+		}
+		os.Exit(0)
+	case "continuous-output":
+		signal.Ignore(syscall.SIGPIPE)
+		for {
+			if _, err := os.Stdout.Write([]byte("x")); err != nil {
+				os.Exit(0)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	case "probe-sleep":
+		if !writeProcessUnixHelperFile("COMPILEDB_TEST_PROCESS_STARTED_FILE", "started") {
+			os.Exit(2)
+		}
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	default:
+		os.Exit(2)
+	}
+}
+
+func inheritedProcessUnixHelperCommand(mode string, environment ...string) *exec.Cmd {
+	cmd := processUnixHelperCommand(nil, mode, environment...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+func startProcessUnixHelperChild(mode string, redirect bool) {
+	cmd := inheritedProcessUnixHelperCommand(mode)
+	if redirect {
+		null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+		if err != nil {
+			os.Exit(2)
+		}
+		cmd.Stdin = null
+		cmd.Stdout = null
+		cmd.Stderr = null
+		defer null.Close()
+	}
+	if err := cmd.Start(); err != nil {
+		os.Exit(2)
+	}
+	if !writeProcessUnixHelperFile("COMPILEDB_TEST_PROCESS_PID_FILE", strconv.Itoa(cmd.Process.Pid)) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		os.Exit(2)
+	}
+}
+
+func writeProcessUnixHelperFile(environment, contents string) bool {
+	filename := os.Getenv(environment)
+	return filename != "" && os.WriteFile(filename, []byte(contents), 0o600) == nil
 }
 
 func assertTestProcessExited(t *testing.T, pidFile string) {

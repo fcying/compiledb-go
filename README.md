@@ -159,8 +159,11 @@ database untouched, even if Make produced partial stdout before failing. Simple 
 printed by the dry run, including their implied parent directories, are tracked so a following
 `cd` can use a generated build directory without depending on the real build's timing.
 
-Build-log backtick expressions outside single quotes are executed once with `sh -c` in the tracked
-command directory; their output is treated as argument data and is not re-evaluated as shell source.
+Build-log backtick expressions outside single quotes are executed once by an embedded POSIX shell
+interpreter in the tracked command directory; their output is treated as argument data and is not
+re-evaluated as shell source. Shell builtins do not require an external shell executable. Programs
+explicitly invoked by the backtick body must still be available through `PATH`; a failure skips only
+the affected command, emits an error diagnostic, and leaves the parser status successful.
 Unsupported shell constructs and conditionals whose execution cannot be
 determined safely are skipped as a whole rather than allowing commands inside groups,
 functions, or control structures to escape into the database. Backslash-newline continuation
@@ -240,6 +243,18 @@ calling compiledb, like so:
 ```
 PATH=/opt/buildroot/bin:$PATH compiledb --full-path make
 ```
+
+### Windows Support
+
+The Windows artifact supports Windows compiler paths, `arguments` output, Windows command-line
+quoting for `--command-style`, and process cancellation through Job Objects. The Make wrapper still
+requires a GNU Make-compatible executable; use `compiledb make --cmd gmake` or
+`compiledb make --cmd mingw32-make` when it is not named `make`.
+
+Build-log parsing currently targets POSIX/MSYS shell syntax. GNU Make output produced in MSYS2 or
+Git Bash is the supported Windows workflow. Native `cmd.exe` recipe grammar, including caret escapes,
+`%VAR%`/`!VAR!`, `cd /d`, and `cmd /C`, is not parsed, and `nmake` is not supported. Backtick
+substitution uses the embedded POSIX interpreter and does not require a shell executable.
 
 ## Testing / Contributing
 

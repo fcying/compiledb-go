@@ -1,8 +1,8 @@
 package internal
 
 import (
+	"bytes"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -936,15 +936,14 @@ func (t *Tool) expandNextNestedCommand(line, workingDir string) (string, bool, b
 				continue
 			}
 			if line[i] == '`' {
-				cmd := exec.CommandContext(t.operationContext(), "sh", "-c", line[start+1:i])
-				configureProcessCommand(cmd, t.operationContext())
-				cmd.Dir = workingDir
-				out, err := outputProcessCommand(cmd, t.operationContext())
+				var stdout bytes.Buffer
+				var stderr bytes.Buffer
+				err := runShellProgram(t.operationContext(), line[start+1:i], workingDir, &stdout, &stderr)
 				if err != nil {
 					t.Logger.Error("Error executing nested command:", err)
 					return "", true, false, nil
 				}
-				output := strings.TrimRight(string(out), "\n")
+				output := strings.TrimRight(stdout.String(), "\n")
 				replacement := ""
 				if quote == '"' {
 					replacement = quoteDoubleQuotedSubstitution(output)
