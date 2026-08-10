@@ -22,8 +22,12 @@ var (
 	RegexFile    string = `^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$)`
 
 	// We want to skip such lines from configure to avoid spurious MAKE expansion errors.
-	checkingMake = regexp.MustCompile(`^checking whether .* sets \$\(\w+\)\.\.\. (yes|no)$`)
+	checkingMake        = regexp.MustCompile(`^checking whether .* sets \$\(\w+\)\.\.\. (yes|no)$`)
+	shellControlCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:!\s*)?(?:if|then|elif|else|fi|case|esac|for|while|until|do|done|select|function)(?:\s|$)`)
+	shellFunction       = regexp.MustCompile(`(?:^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)`)
 )
+
+const maxBuildLogLineSize = 100 * 1024 * 1024
 
 type parserPatterns struct {
 	compile        *regexp.Regexp
@@ -36,6 +40,16 @@ type parserPatterns struct {
 type shellCommand struct {
 	text      string
 	separator string
+}
+
+type logicalLine struct {
+	text string
+	line int
+}
+
+type shellTokenizationError struct {
+	offset int
+	reason string
 }
 
 type parsedCompileCommand struct {
@@ -60,20 +74,21 @@ const (
 	shellStatusFailure
 )
 
-func (t *Tool) splitArgs(input string) []string {
-	args, ok := splitShellArguments(input)
-	if !ok {
-		t.Logger.Warnf("parse failed, input: %s", input)
+func (t *Tool) splitArgs(input string, line int, workingDir string) []string {
+	args, parseErr := splitShellArguments(input)
+	if parseErr != nil {
+		t.logTokenizationFailure(line, workingDir, parseErr)
 		return nil
 	}
 
 	return args
 }
 
-func splitShellArguments(line string) ([]string, bool) {
+func splitShellArguments(line string) ([]string, *shellTokenizationError) {
 	arguments := []string{}
 	var token strings.Builder
 	var quote byte
+	quoteStart := 0
 	tokenStarted := false
 	flush := func() {
 		if tokenStarted {
@@ -120,10 +135,11 @@ func splitShellArguments(line string) ([]string, bool) {
 		switch character {
 		case '\'', '"':
 			quote = character
+			quoteStart = i
 			tokenStarted = true
 		case '\\':
 			if i+1 >= len(line) {
-				return nil, false
+				return nil, &shellTokenizationError{offset: i, reason: "trailing escape"}
 			}
 			i++
 			if line[i] != '\n' {
@@ -138,18 +154,91 @@ func splitShellArguments(line string) ([]string, bool) {
 		}
 	}
 	if quote != 0 {
-		return nil, false
+		flush()
+		return nil, &shellTokenizationError{offset: quoteStart, reason: "unterminated quote"}
 	}
 	flush()
-	return arguments, true
+	return arguments, nil
 }
 
-func splitShellCommands(line string) []shellCommand {
+func (t *Tool) logTokenizationFailure(line int, workingDir string, parseErr *shellTokenizationError) {
+	t.Logger.Errorf(
+		"skip malformed command at build log line %d (cwd %q): %s at byte %d",
+		line,
+		workingDir,
+		parseErr.reason,
+		parseErr.offset,
+	)
+}
+
+func shellLexicalError(line string) *shellTokenizationError {
+	var quote byte
+	quoteStart := 0
+	backtickStart := -1
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		character := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if backtickStart >= 0 {
+			if character == '\\' {
+				escaped = true
+			} else if character == '`' {
+				backtickStart = -1
+			}
+			continue
+		}
+		if quote == '\'' {
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		if character == '\\' {
+			escaped = true
+			continue
+		}
+		if character == '`' {
+			backtickStart = i
+			continue
+		}
+		if character == '\'' {
+			if quote == 0 {
+				quote = character
+				quoteStart = i
+			}
+			continue
+		}
+		if character == '"' {
+			if quote == '"' {
+				quote = 0
+			} else if quote == 0 {
+				quote = character
+				quoteStart = i
+			}
+		}
+	}
+	if backtickStart >= 0 {
+		return &shellTokenizationError{offset: backtickStart, reason: "unterminated backtick"}
+	}
+	if quote != 0 {
+		return &shellTokenizationError{offset: quoteStart, reason: "unterminated quote"}
+	}
+	if escaped {
+		return &shellTokenizationError{offset: len(line) - 1, reason: "trailing escape"}
+	}
+	return nil
+}
+
+func splitShellCommands(line string) ([]shellCommand, bool) {
 	commands := []shellCommand{}
 	start := 0
 	separator := ""
 	var quote byte
 	escaped := false
+	wordStarted := false
 	commandSubstitutionDepth := 0
 	groupDepth := 0
 	flush := func(end int, nextSeparator string) {
@@ -163,6 +252,7 @@ func splitShellCommands(line string) []shellCommand {
 		character := line[i]
 		if escaped {
 			escaped = false
+			wordStarted = true
 			continue
 		}
 		if quote != 0 {
@@ -182,42 +272,111 @@ func splitShellCommands(line string) []shellCommand {
 			continue
 		}
 		if character == '$' && i+1 < len(line) && line[i+1] == '(' {
+			wordStarted = true
 			commandSubstitutionDepth = 1
 			i++
 			continue
 		}
+		if character == '#' && !wordStarted {
+			if strings.TrimSpace(line[start:i]) == "" && (separator == "&&" || separator == "||") {
+				return commands, false
+			}
+			flush(i, "")
+			return commands, true
+		}
 		switch character {
 		case '\\':
 			escaped = true
+			wordStarted = true
 		case '\'', '"', '`':
 			quote = character
+			wordStarted = true
+		case ' ', '\t', '\r', '\n':
+			wordStarted = false
 		case '(':
 			groupDepth++
+			wordStarted = false
 		case ')':
 			if groupDepth > 0 {
 				groupDepth--
 			}
-		case '#':
-			if i == 0 || strings.ContainsRune(" \t\r\n;|&", rune(line[i-1])) {
-				flush(i, "")
-				return commands
-			}
+			wordStarted = false
 		case ';':
 			if groupDepth > 0 {
+				wordStarted = false
 				continue
 			}
 			flush(i, ";")
 			start = i + 1
+			wordStarted = false
 		case '&', '|':
 			if groupDepth == 0 && i+1 < len(line) && line[i+1] == character {
 				flush(i, line[i:i+2])
 				i++
 				start = i + 1
 			}
+			wordStarted = false
+		case '<', '>':
+			wordStarted = false
+		default:
+			wordStarted = true
 		}
 	}
 	flush(len(line), "")
-	return commands
+	return commands, true
+}
+
+func hasUnsupportedShellControlStructure(line string) bool {
+	var quote byte
+	escaped := false
+	wordStarted := false
+	visible := make([]byte, len(line))
+	for i := 0; i < len(line); i++ {
+		character := line[i]
+		if escaped {
+			escaped = false
+			wordStarted = true
+			visible[i] = ' '
+			continue
+		}
+		if quote != 0 {
+			visible[i] = ' '
+			if character == '\\' && quote != '\'' {
+				escaped = true
+			} else if quote == '"' && character == '$' && i+1 < len(line) && line[i+1] == '(' {
+				return true
+			} else if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		if character == '$' && i+1 < len(line) && line[i+1] == '(' {
+			return true
+		}
+		if character == '#' && !wordStarted {
+			break
+		}
+		switch character {
+		case '\\':
+			escaped = true
+			wordStarted = true
+			visible[i] = ' '
+		case '\'', '"', '`':
+			quote = character
+			wordStarted = true
+			visible[i] = ' '
+		case ' ', '\t', '\r', '\n', ';', '|', '&', '<', '>', '(', ')':
+			wordStarted = false
+			visible[i] = character
+		case '{', '}':
+			return true
+		default:
+			wordStarted = true
+			visible[i] = character
+		}
+	}
+	text := string(visible)
+	return shellControlCommand.MatchString(text) || shellFunction.MatchString(text)
 }
 
 func hasUnsupportedShellSyntax(line string) bool {
@@ -298,32 +457,112 @@ func shellCommandExecution(separator string, previous shellCommandStatus) (bool,
 	return false, false
 }
 
-func mergeLogicalLines(lines []string) []string {
-	merged := make([]string, 0, len(lines))
+type logicalLineIssue struct {
+	line   int
+	reason string
+}
+
+func lineContinuation(line string, initialQuote byte, initialWordStarted bool) (string, bool, byte, bool) {
+	quote := initialQuote
+	escaped := false
+	wordStarted := initialWordStarted || initialQuote != 0
+	for i := 0; i < len(line); i++ {
+		character := line[i]
+		if quote == '\'' {
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		if escaped {
+			escaped = false
+			wordStarted = true
+			continue
+		}
+		if character == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		if character == '#' && !wordStarted {
+			return line, false, 0, false
+		}
+		if character == '\'' || character == '"' || character == '`' {
+			quote = character
+			wordStarted = true
+			continue
+		}
+		switch character {
+		case ' ', '\t', '\r', '\n', ';', '|', '&', '<', '>', '(', ')':
+			wordStarted = false
+		default:
+			wordStarted = true
+		}
+	}
+	if escaped && quote != '\'' {
+		return line[:len(line)-1], true, quote, wordStarted
+	}
+	return line, false, 0, false
+}
+
+func mergeLogicalLines(lines []string) ([]logicalLine, []logicalLineIssue) {
+	merged := make([]logicalLine, 0, len(lines))
+	issues := []logicalLineIssue{}
 	var builder strings.Builder
+	var quote byte
+	wordStarted := false
+	continuationStart := 0
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for index, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		if len(line) > maxBuildLogLineSize {
+			start := index + 1
+			if continuationStart != 0 {
+				start = continuationStart
+			}
+			issues = append(issues, logicalLineIssue{line: start, reason: "physical line exceeds 100 MiB limit"})
+			builder.Reset()
+			quote = 0
+			wordStarted = false
+			continuationStart = 0
 			continue
 		}
 
-		if before, ok := strings.CutSuffix(line, "\\"); ok {
-			builder.WriteString(before)
-			builder.WriteString(" ")
+		content, continued, nextQuote, nextWordStarted := lineContinuation(line, quote, wordStarted)
+		if continued {
+			if continuationStart == 0 {
+				continuationStart = index + 1
+			}
+			builder.WriteString(content)
+			quote = nextQuote
+			wordStarted = nextWordStarted
 			continue
 		}
 
-		builder.WriteString(line)
-		merged = append(merged, builder.String())
+		builder.WriteString(content)
+		if text := strings.TrimSpace(builder.String()); text != "" {
+			start := index + 1
+			if continuationStart != 0 {
+				start = continuationStart
+			}
+			merged = append(merged, logicalLine{text: text, line: start})
+		}
 		builder.Reset()
+		quote = 0
+		wordStarted = false
+		continuationStart = 0
 	}
 
-	if builder.Len() > 0 {
-		merged = append(merged, strings.TrimSpace(builder.String()))
+	if continuationStart != 0 {
+		issues = append(issues, logicalLineIssue{line: continuationStart, reason: "unterminated line continuation"})
 	}
 
-	return merged
+	return merged, issues
 }
 
 func compilePatterns(cfg Config) (parserPatterns, error) {
@@ -541,7 +780,8 @@ func splitMakeCommand(line string) ([]string, bool) {
 		}
 	}
 	if escaped || quote != 0 {
-		return nil, false
+		flush()
+		return arguments, false
 	}
 	flush()
 	return arguments, true
@@ -642,20 +882,20 @@ func makeDirectoryEvent(line, event string) (string, bool) {
 	return value[1 : len(value)-1], true
 }
 
-func (t *Tool) expandNestedCommands(line, workingDir string) (string, bool) {
+func (t *Tool) expandNestedCommands(line, workingDir string) (string, bool, *shellTokenizationError) {
 	for {
-		expanded, found, ok := t.expandNextNestedCommand(line, workingDir)
+		expanded, found, ok, parseErr := t.expandNextNestedCommand(line, workingDir)
 		if !ok {
-			return "", false
+			return "", false, parseErr
 		}
 		if !found {
-			return line, true
+			return line, true, nil
 		}
 		line = expanded
 	}
 }
 
-func (t *Tool) expandNextNestedCommand(line, workingDir string) (string, bool, bool) {
+func (t *Tool) expandNextNestedCommand(line, workingDir string) (string, bool, bool, *shellTokenizationError) {
 	var quote byte
 	escaped := false
 	for i := 0; i < len(line); i++ {
@@ -702,7 +942,7 @@ func (t *Tool) expandNextNestedCommand(line, workingDir string) (string, bool, b
 				out, err := outputProcessCommand(cmd, t.operationContext())
 				if err != nil {
 					t.Logger.Error("Error executing nested command:", err)
-					return "", true, false
+					return "", true, false, nil
 				}
 				output := strings.TrimRight(string(out), "\n")
 				replacement := ""
@@ -719,14 +959,14 @@ func (t *Tool) expandNextNestedCommand(line, workingDir string) (string, bool, b
 					}
 					replacement = result.String()
 				}
-				return line[:start] + replacement + line[i+1:], true, true
+				return line[:start] + replacement + line[i+1:], true, true, nil
 			}
 		}
 		if i >= len(line) {
-			return "", true, false
+			return "", true, false, &shellTokenizationError{offset: start, reason: "unterminated backtick"}
 		}
 	}
-	return line, false, true
+	return line, false, true, nil
 }
 
 func quotePOSIXShellArgument(argument string) string {
@@ -1127,8 +1367,8 @@ func applyCompilerWorkingDirectory(arguments []string, invocation compilerInvoca
 	return directory
 }
 
-func (t *Tool) processCompileCommand(command string, workingDir string, patterns parserPatterns) []parsedCompileCommand {
-	arguments := t.splitArgs(command)
+func (t *Tool) processCompileCommand(command string, workingDir string, line int, patterns parserPatterns) []parsedCompileCommand {
+	arguments := t.splitArgs(command, line, workingDir)
 	if len(arguments) == 0 {
 		return nil
 	}
@@ -1314,7 +1554,13 @@ func (t *Tool) Parse(buildLog []string) {
 	dirStack := []directoryFrame{{path: workingDir}}
 	virtualDirectories := make(map[string]struct{})
 
-	for _, line := range mergeLogicalLines(buildLog) {
+	logicalLines, lineIssues := mergeLogicalLines(buildLog)
+	for _, issue := range lineIssues {
+		t.Logger.Errorf("skip build log line %d: %s", issue.line, issue.reason)
+	}
+	for _, logicalLine := range logicalLines {
+		line := logicalLine.text
+		lineNumber := logicalLine.line
 		if t.operationContext().Err() != nil {
 			t.StatusCode = contextExitCode(t.operationContext())
 			return
@@ -1322,7 +1568,11 @@ func (t *Tool) Parse(buildLog []string) {
 		t.Logger.Debug("New command:", line)
 
 		// Track make-reported directory changes {{{
-		if directory, ok := makeDirectoryEvent(line, "Entering"); ok {
+		markerLine := ""
+		if commands, _ := splitShellCommands(line); len(commands) == 1 && commands[0].separator == "" {
+			markerLine = commands[0].text
+		}
+		if directory, ok := makeDirectoryEvent(markerLine, "Entering"); ok {
 			enterDir := cleanTrackedPath(directory)
 			if len(dirStack) > 0 && dirStack[0].provisional {
 				dirStack[0] = directoryFrame{path: enterDir}
@@ -1332,7 +1582,7 @@ func (t *Tool) Parse(buildLog []string) {
 			workingDir = dirStack[0].path
 			t.Logger.Infof("entering change workingDir: %s", workingDir)
 			continue
-		} else if directory, ok := makeDirectoryEvent(line, "Leaving"); ok {
+		} else if directory, ok := makeDirectoryEvent(markerLine, "Leaving"); ok {
 			leaveDir := cleanTrackedPath(directory)
 			for i := 0; i < len(dirStack)-1; i++ {
 				if cleanTrackedPath(dirStack[i].path) != leaveDir {
@@ -1349,12 +1599,21 @@ func (t *Tool) Parse(buildLog []string) {
 		if checkingMake.MatchString(line) {
 			continue
 		}
+		if hasUnsupportedShellControlStructure(line) {
+			t.Logger.Debugf("skip unsupported shell control structure: %s", line)
+			continue
+		}
 
 		lineWorkingDir := workingDir
 		pendingMakeDir := ""
 		pendingMakeSafe := false
 		previousStatus := shellStatusSuccess
-		for _, shellCommand := range splitShellCommands(line) {
+		shellCommands, complete := splitShellCommands(line)
+		if !complete {
+			t.Logger.Debugf("skip incomplete shell conditional: %s", line)
+			continue
+		}
+		for _, shellCommand := range shellCommands {
 			execute, known := shellCommandExecution(shellCommand.separator, previousStatus)
 			if !known {
 				previousStatus = shellStatusUnknown
@@ -1365,6 +1624,7 @@ func (t *Tool) Parse(buildLog []string) {
 				continue
 			}
 			commandText := shellCommand.text
+			originalCommandText := commandText
 			if hasUnsupportedShellSyntax(commandText) {
 				previousStatus = shellStatusUnknown
 				continue
@@ -1385,13 +1645,29 @@ func (t *Tool) Parse(buildLog []string) {
 			if compilerCandidateExpansion {
 				var found bool
 				var ok bool
-				commandText, found, ok = t.expandNextNestedCommand(commandText, lineWorkingDir)
+				var parseErr *shellTokenizationError
+				commandText, found, ok, parseErr = t.expandNextNestedCommand(commandText, lineWorkingDir)
 				if !ok || !found {
+					if parseErr != nil {
+						t.logTokenizationFailure(lineNumber, lineWorkingDir, parseErr)
+					}
 					previousStatus = shellStatusUnknown
 					continue
 				}
 				candidateArguments, parsed := splitMakeCommand(commandText)
-				if !parsed || !commandContainsCompiler(commandText, candidateArguments, lineWorkingDir, patterns) {
+				if !parsed {
+					if commandContainsCompiler(commandText, candidateArguments, lineWorkingDir, patterns) {
+						parseErr := shellLexicalError(originalCommandText)
+						if parseErr != nil {
+							t.logTokenizationFailure(lineNumber, lineWorkingDir, parseErr)
+						} else {
+							t.splitArgs(commandText, lineNumber, lineWorkingDir)
+						}
+					}
+					previousStatus = shellStatusUnknown
+					continue
+				}
+				if !commandContainsCompiler(commandText, candidateArguments, lineWorkingDir, patterns) {
 					previousStatus = shellStatusUnknown
 					continue
 				}
@@ -1399,13 +1675,25 @@ func (t *Tool) Parse(buildLog []string) {
 			}
 			if needsExpansion && strings.Contains(commandText, "`") {
 				var ok bool
-				commandText, ok = t.expandNestedCommands(commandText, lineWorkingDir)
+				var parseErr *shellTokenizationError
+				commandText, ok, parseErr = t.expandNestedCommands(commandText, lineWorkingDir)
 				if !ok {
+					if parseErr != nil {
+						t.logTokenizationFailure(lineNumber, lineWorkingDir, parseErr)
+					}
 					previousStatus = shellStatusUnknown
 					continue
 				}
 			}
 			arguments, ok := splitMakeCommand(commandText)
+			if !ok {
+				if len(arguments) > 0 && (arguments[0] == "cd" || isMakeExecutableFromArguments(arguments) ||
+					commandContainsCompiler(commandText, arguments, lineWorkingDir, patterns)) {
+					t.splitArgs(commandText, lineNumber, lineWorkingDir)
+				}
+				previousStatus = shellStatusUnknown
+				continue
+			}
 			if t.makeDirectoryMarkers {
 				if directories, recognized := makeVirtualDirectories(arguments, lineWorkingDir); recognized {
 					for _, directory := range directories {
@@ -1458,7 +1746,7 @@ func (t *Tool) Parse(buildLog []string) {
 				}
 				continue
 			}
-			for _, parsed := range t.processCompileCommand(commandText, lineWorkingDir, patterns) {
+			for _, parsed := range t.processCompileCommand(commandText, lineWorkingDir, lineNumber, patterns) {
 				command := ShellJoinArgs(parsed.arguments)
 				if t.Config.CommandStyle {
 					result = append(result, Command{Directory: parsed.directory, Command: command, File: parsed.filePath})

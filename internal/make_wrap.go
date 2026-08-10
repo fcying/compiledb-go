@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -24,7 +26,8 @@ func commandExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	if strings.Contains(err.Error(), "executable file not found") {
+	var execErr *exec.Error
+	if errors.Is(err, exec.ErrNotFound) || (errors.As(err, &execErr) && errors.Is(execErr.Err, os.ErrNotExist)) {
 		return 127
 	}
 	if errors.As(err, &exitErr) {
@@ -39,15 +42,109 @@ func commandExitCode(err error) int {
 	return 1
 }
 
-func (t *Tool) makeCommand(arguments ...string) *exec.Cmd {
-	ctx := t.operationContext()
-	executable := makePath
-	if !strings.ContainsAny(executable, `/\`) {
-		if fullPath := compilerFullPath(executable, t.Config.BuildDir); fullPath != "" {
-			executable = fullPath
+func checkMakeExecutable(filename string) error {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() || (runtime.GOOS != "windows" && info.Mode()&0o111 == 0) {
+		return fs.ErrPermission
+	}
+	return nil
+}
+
+func makeExecutableCandidates(filename string, searchPath bool) []string {
+	candidates := executableCandidates(filename, runtime.GOOS, os.Getenv("PATHEXT"))
+	if runtime.GOOS != "windows" || !searchPath || filepath.Ext(filename) == "" || len(candidates) != 1 {
+		return candidates
+	}
+	extensions := windowsExecutableExtensions(os.Getenv("PATHEXT"))
+	for _, extension := range extensions {
+		if strings.EqualFold(filepath.Ext(filename), extension) {
+			candidates = make([]string, 1, len(extensions)+1)
+			candidates[0] = filename
+			for _, suffix := range extensions {
+				candidates = append(candidates, filename+suffix)
+			}
+			break
 		}
 	}
-	cmd := exec.CommandContext(ctx, executable, arguments...)
+	return candidates
+}
+
+func findMakeExecutable(filename string, searchPath bool) (string, error) {
+	var firstError error
+	for _, candidate := range makeExecutableCandidates(filename, searchPath) {
+		if err := checkMakeExecutable(candidate); err != nil {
+			if !errors.Is(err, os.ErrNotExist) && firstError == nil {
+				firstError = err
+			}
+			continue
+		}
+		absolute, err := filepath.Abs(candidate)
+		if err != nil {
+			return "", err
+		}
+		return absolute, nil
+	}
+	if firstError != nil {
+		return "", firstError
+	}
+	return "", exec.ErrNotFound
+}
+
+func resolveMakeExecutable(executable, workingDir string) (string, error) {
+	baseDir := filepath.FromSlash(workingDir)
+	if !filepath.IsAbs(baseDir) {
+		absolute, err := filepath.Abs(baseDir)
+		if err != nil {
+			return "", err
+		}
+		baseDir = absolute
+	}
+
+	candidate := filepath.FromSlash(executable)
+	driveRelative := runtime.GOOS == "windows" && filepath.VolumeName(candidate) != "" && !filepath.IsAbs(candidate)
+	if driveRelative {
+		return findMakeExecutable(candidate, false)
+	}
+	if strings.ContainsAny(executable, `/\`) {
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(baseDir, candidate)
+		}
+		return findMakeExecutable(candidate, false)
+	}
+
+	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
+		if directory == "" {
+			if runtime.GOOS == "windows" {
+				continue
+			}
+			directory = baseDir
+		} else if !filepath.IsAbs(directory) {
+			directory = filepath.Join(baseDir, directory)
+		}
+		if fullPath, err := findMakeExecutable(filepath.Join(directory, executable), true); err == nil {
+			return fullPath, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+func (t *Tool) makeCommand(arguments ...string) *exec.Cmd {
+	ctx := t.operationContext()
+	executable := t.Config.MakeCommand
+	if executable == "" {
+		executable = makePath
+	}
+	fullPath, resolveErr := resolveMakeExecutable(executable, t.Config.BuildDir)
+	var cmd *exec.Cmd
+	if resolveErr == nil {
+		cmd = exec.CommandContext(ctx, fullPath, arguments...)
+	} else {
+		cmd = exec.CommandContext(ctx, executable, arguments...)
+		cmd.Err = resolveErr
+	}
 	configureMakeCommand(cmd, ctx)
 	cmd.Dir = t.Config.BuildDir
 	return cmd
@@ -159,22 +256,61 @@ func loggerAtLevel(logger *logrus.Logger, level logrus.Level) *logrus.Logger {
 	return clone
 }
 
+type discoveryResult struct {
+	status       int
+	parserStatus int
+	stopWatching func()
+}
+
+func (t *Tool) runDiscoveryMake(cmd *exec.Cmd) discoveryResult {
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	err := waitProcessCommand(cmd, t.operationContext())
+	result := discoveryResult{}
+	if cmd.Process != nil {
+		result.stopWatching = watchExitedProcessTree(t.operationContext(), cmd.Process)
+		cleanupErr := cleanupExitedProcessTree(cmd.Process)
+		if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrProcessDone) && err == nil {
+			err = cleanupErr
+		}
+	}
+	if stderrBuf.Len() > 0 {
+		if writeErr := writeFileWithContext(t.operationContext(), os.Stderr, stderrBuf.Bytes()); writeErr != nil && err == nil {
+			err = writeErr
+		}
+	}
+	if err != nil && !reportMakeOutputError(t.Logger, err) {
+		if t.operationContext().Err() != nil {
+			result.status = contextExitCode(t.operationContext())
+		} else {
+			result.status = commandExitCode(err)
+		}
+		t.Logger.Errorf("dry-run make failed: %v", err)
+		return result
+	}
+
+	buildLog, scanErr := scanBuildLog(stdoutBuf.Bytes())
+	if scanErr != nil {
+		result.status = 1
+		t.Logger.Errorf("read dry-run output failed: %v", scanErr)
+		return result
+	}
+	clone := *t
+	clone.makeDirectoryMarkers = true
+	if !t.Config.NoBuild {
+		clone.Logger = loggerAtLevel(t.Logger, logrus.ErrorLevel)
+	}
+	clone.Parse(buildLog)
+	result.parserStatus = clone.StatusCode
+	return result
+}
+
 func (t *Tool) MakeWrap(args []string) {
-	var (
-		wg              sync.WaitGroup
-		dryRunMakeErr   error
-		dryRunStatus    int
-		parserStatus    int
-		buildStatus     int
-		buildErr        error
-		stopWatchingDry func()
-	)
 	buildArgs := append([]string(nil), args...)
 	dryRunArgs := discoveryMakeArguments(args)
-	dryRunCmd := t.makeCommand(dryRunArgs...)
-	dryRunEnvironment := discoveryMakeEnvironment(dryRunCmd.Environ())
 	usesStdin := makeUsesStdinMakefile(buildArgs) || makeUsesStdinMakefile(dryRunArgs) ||
-		makeEnvironmentUsesStdinMakefile(os.Environ()) || makeEnvironmentUsesStdinMakefile(dryRunEnvironment)
+		makeEnvironmentUsesStdinMakefile(os.Environ())
 	var stdinData []byte
 	if usesStdin {
 		var err error
@@ -190,49 +326,6 @@ func (t *Tool) MakeWrap(args []string) {
 		}
 	}
 
-	dryRunCmd.WaitDelay = makePipeWaitDelay
-	dryRunCmd.Env = dryRunEnvironment
-	if usesStdin {
-		dryRunCmd.Stdin = bytes.NewReader(stdinData)
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		var stdoutBuf bytes.Buffer
-		dryRunCmd.Stdout = &stdoutBuf
-		dryRunCmd.Stderr = &stdoutBuf
-		err := waitProcessCommand(dryRunCmd, t.operationContext())
-		if dryRunCmd.Process != nil {
-			stopWatchingDry = watchExitedProcessTree(t.operationContext(), dryRunCmd.Process)
-			cleanupErr := cleanupExitedProcessTree(dryRunCmd.Process)
-			if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrProcessDone) && err == nil {
-				err = cleanupErr
-			}
-		}
-		if err != nil && !reportMakeOutputError(t.Logger, err) {
-			dryRunMakeErr = err
-			if t.operationContext().Err() != nil {
-				dryRunStatus = contextExitCode(t.operationContext())
-			} else {
-				dryRunStatus = commandExitCode(err)
-			}
-			t.Logger.Errorf("dry-run make failed: %v", err)
-			return
-		}
-
-		clone := *t
-		clone.makeDirectoryMarkers = true
-		if !t.Config.NoBuild {
-			// Keep parser errors visible while the real make output is streaming.
-			clone.Logger = loggerAtLevel(t.Logger, logrus.ErrorLevel)
-		}
-
-		buildLog := strings.Split(stdoutBuf.String(), "\n")
-		clone.Parse(buildLog)
-		parserStatus = clone.StatusCode
-	}()
-
 	var stopWatchingReal func()
 	if !t.Config.NoBuild {
 		cmd := t.makeCommand(buildArgs...)
@@ -243,45 +336,47 @@ func (t *Tool) MakeWrap(args []string) {
 		if t.Config.OutputFile == "-" {
 			makeStdout = os.Stderr
 		}
-		buildErr, stopWatchingReal = runMakeCommand(t.operationContext(), cmd, makeStdout, os.Stderr, t.Config.Encoding)
+		buildErr, watcher := runMakeCommand(t.operationContext(), cmd, makeStdout, os.Stderr, t.Config.Encoding)
+		stopWatchingReal = watcher
 		if buildErr != nil {
 			if t.operationContext().Err() != nil {
-				buildStatus = contextExitCode(t.operationContext())
-				goto waitDryRun
+				t.StatusCode = contextExitCode(t.operationContext())
+				if stopWatchingReal != nil {
+					stopWatchingReal()
+				}
+				return
 			}
 			if !errors.Is(buildErr, exec.ErrWaitDelay) && !errors.Is(buildErr, errProcessOutputIncomplete) {
-				buildStatus = commandExitCode(buildErr)
-				t.Logger.Errorf("make failed with status %d: %v", buildStatus, buildErr)
+				t.StatusCode = commandExitCode(buildErr)
+				t.Logger.Errorf("make failed with status %d: %v", t.StatusCode, buildErr)
+				if stopWatchingReal != nil {
+					stopWatchingReal()
+				}
+				return
 			}
+			_ = reportMakeOutputError(t.Logger, buildErr)
 		}
-	}
-
-waitDryRun:
-	wg.Wait()
-	if buildErr != nil && buildStatus == 0 && t.operationContext().Err() == nil {
-		_ = reportMakeOutputError(t.Logger, buildErr)
 	}
 	if stopWatchingReal != nil {
-		stopWatchingReal()
-	}
-	if stopWatchingDry != nil {
-		stopWatchingDry()
-	}
-	if !t.Config.NoBuild {
-		if buildStatus != 0 {
-			t.StatusCode = buildStatus
-		} else if parserStatus != 0 {
-			t.StatusCode = parserStatus
-		} else if dryRunStatus != 0 {
-			t.StatusCode = dryRunStatus
-		}
-		return
+		defer stopWatchingReal()
 	}
 
-	if dryRunMakeErr != nil {
-		t.StatusCode = dryRunStatus
-	} else if parserStatus != 0 {
-		t.StatusCode = parserStatus
+	dryRunCmd := t.makeCommand(dryRunArgs...)
+	dryRunCmd.WaitDelay = makePipeWaitDelay
+	dryRunCmd.Env = discoveryMakeEnvironment(dryRunCmd.Environ())
+	if usesStdin {
+		dryRunCmd.Stdin = bytes.NewReader(stdinData)
+	}
+	discovery := t.runDiscoveryMake(dryRunCmd)
+	if discovery.stopWatching != nil {
+		defer discovery.stopWatching()
+	}
+	if discovery.status != 0 {
+		t.StatusCode = discovery.status
+		return
+	}
+	if discovery.parserStatus != 0 {
+		t.StatusCode = discovery.parserStatus
 	}
 }
 

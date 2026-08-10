@@ -130,6 +130,9 @@ func compilerFullPath(compiler, workingDir string) string {
 
 	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
 		if directory == "" {
+			if runtime.GOOS == "windows" {
+				continue
+			}
 			directory = baseDir
 		} else if !filepath.IsAbs(directory) {
 			directory = filepath.Join(baseDir, directory)
@@ -142,10 +145,29 @@ func compilerFullPath(compiler, workingDir string) string {
 }
 
 func executableCandidates(filename, goos, pathExt string) []string {
-	candidates := []string{filename}
 	if goos != "windows" {
-		return candidates
+		return []string{filename}
 	}
+	extensions := windowsExecutableExtensions(pathExt)
+	if len(extensions) == 0 {
+		return []string{filename}
+	}
+	for _, extension := range extensions {
+		if strings.EqualFold(filepath.Ext(filename), extension) {
+			return []string{filename}
+		}
+	}
+	candidates := make([]string, 0, len(extensions)+1)
+	if filepath.Ext(filename) != "" {
+		candidates = append(candidates, filename)
+	}
+	for _, extension := range extensions {
+		candidates = append(candidates, filename+extension)
+	}
+	return candidates
+}
+
+func windowsExecutableExtensions(pathExt string) []string {
 	if pathExt == "" {
 		pathExt = ".COM;.EXE;.BAT;.CMD"
 	}
@@ -159,14 +181,8 @@ func executableCandidates(filename, goos, pathExt string) []string {
 			extension = "." + extension
 		}
 		extensions = append(extensions, extension)
-		if strings.EqualFold(filepath.Ext(filename), extension) {
-			return candidates
-		}
 	}
-	for _, extension := range extensions {
-		candidates = append(candidates, filename+extension)
-	}
-	return candidates
+	return extensions
 }
 
 func findExecutable(filename string) string {

@@ -13,10 +13,14 @@
 - Strict mode is the default: a parsed source is omitted unless it resolves to a regular file relative to the tracked directory. Symlinks to regular files are accepted. Tests commonly use `NoStrict: true` because `tests/build.log` contains `/opt/compiledb_test/...` paths.
 - The default option-aware scanner records actual compiler-driver commands containing source inputs even without `-c`. Multi-source commands generate one entry per source; link-only commands and noncompiler tools such as `clang-format`/`clang-tidy` remain omitted.
 - In `--no-strict` mode, a simple inline `cd` updates the tracked directory without consulting the local filesystem. This supports logs captured on another machine; strict mode validates that the directory exists before following a conditional branch.
-- `compiledb make` runs `make -Bnkw` for command discovery and, unless `--no-build` is set, runs the requested real Make command concurrently. The parser consumes dry-run output; real Make stdout/stderr is forwarded to the caller.
-- Real Make failure takes precedence over dry-run failure. If the real build succeeds but the dry run fails, the dry-run status is returned. Under `--no-build`, dry-run failure is returned directly.
+- `compiledb make` first runs the requested real Make command and only runs `make -Bnkw` discovery after it succeeds; `--no-build` runs discovery directly. The parser consumes discovery output; real Make stdout/stderr is forwarded to the caller.
+- `compiledb make --cmd/-c COMMAND` selects the GNU Make-compatible executable for both real and discovery invocations. Before the first `--`, the subcommand consumes this option and `--help/-h` with the original Click short-cluster semantics; the first `--` is a wrapper delimiter and is not forwarded, while all following arguments are. Other Make arguments preserve their order and value outside recognized short-option clusters. Top-level `--command-style/-c` is parsed before `make` and remains a separate option.
+- Real Make failure takes precedence over dry-run failure. If the real build succeeds but the dry run fails, the dry-run status is returned. Under `--no-build`, dry-run failure is returned directly. A failed discovery never creates or updates the database, even when it produced partial stdout.
+- Discovery parsing consumes stdout only. Discovery stderr is forwarded to stderr as user-visible diagnostics and must never be parsed as compiler commands or written to JSON stdout.
 - Backtick expressions in build-log lines are executed through `sh -c` before command extraction. Do not feed untrusted logs to the parser. Preserve or explicitly test this behavior when changing parser flow.
-- Compiler arguments are parsed with `go-shellwords`. Preserve quoting, escaped paths, command-style output, and repeated macro arguments.
+- Compiler arguments are parsed with the repository's POSIX-like tokenizer. Preserve quoting, escaped paths, command-style output, and repeated macro arguments.
+- Relevant malformed compiler, `cd`, and Make commands emit a recoverable Error diagnostic containing the build-log line, tracked cwd, reason, and byte offset without the full command. Unrelated malformed output remains silent; parser status stays successful unless canceled.
+- Complex shell groups, functions, and control structures are skipped as a whole. Backslash-newline continuation follows shell joining semantics, does not insert whitespace, and drops malformed or unterminated fragments without changing the successful parser status.
 
 ## Logging And Output
 
@@ -24,7 +28,7 @@
 - Make output drain timeouts preserve a successful Make exit status, but the incomplete-output diagnostic must remain visible at `ErrorLevel`.
 - `--output -` writes JSON to stdout. Keep all diagnostics on stderr and add an explicit CLI test before introducing or changing non-debug logs.
 - File and stdout compilation database output both end with one newline.
-- During a normal `compiledb make`, parser logging is temporarily restricted while real Make output is streaming, then restored. Verify diagnostics through both direct parsing and the Make wrapper path.
+- During a normal `compiledb make`, discovery parser logging uses an independent logger restricted to ErrorLevel. Verify diagnostics through both direct parsing and the Make wrapper path.
 
 ## Verification
 

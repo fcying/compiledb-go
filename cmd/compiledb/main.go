@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -214,7 +215,71 @@ func showUsageError(ctx *cli.Context, err error, isSubcommand bool) error {
 	} else {
 		_ = cli.ShowAppHelp(ctx)
 	}
-	return err
+	return cli.Exit("", 2)
+}
+
+func parseMakeArguments(arguments []string) (string, []string, bool, error) {
+	makeCommand := ""
+	makeArguments := make([]string, 0, len(arguments))
+	showHelp := false
+	options := true
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if options && argument == "--" {
+			options = false
+			continue
+		}
+		if !options {
+			makeArguments = append(makeArguments, argument)
+			continue
+		}
+
+		switch {
+		case argument == "--help":
+			showHelp = true
+		case strings.HasPrefix(argument, "--help="):
+			return "", nil, false, fmt.Errorf("Option '--help' does not take a value.")
+		case argument == "--cmd":
+			if index+1 >= len(arguments) {
+				return "", nil, false, fmt.Errorf("Option '--cmd' requires an argument.")
+			}
+			index++
+			makeCommand = arguments[index]
+		case strings.HasPrefix(argument, "--cmd="):
+			makeCommand = strings.TrimPrefix(argument, "--cmd=")
+		case len(argument) > 1 && argument[0] == '-' && argument[1] != '-':
+			unknown := make([]byte, 0, len(argument)-1)
+			for position := 1; position < len(argument); position++ {
+				switch argument[position] {
+				case 'h':
+					showHelp = true
+				case 'c':
+					if len(unknown) != 0 {
+						makeArguments = append(makeArguments, "-"+string(unknown))
+						unknown = nil
+					}
+					if position+1 < len(argument) {
+						makeCommand = argument[position+1:]
+					} else {
+						if index+1 >= len(arguments) {
+							return "", nil, false, fmt.Errorf("Option '-c' requires an argument.")
+						}
+						index++
+						makeCommand = arguments[index]
+					}
+					position = len(argument)
+				default:
+					unknown = append(unknown, argument[position])
+				}
+			}
+			if len(unknown) != 0 {
+				makeArguments = append(makeArguments, "-"+string(unknown))
+			}
+		default:
+			makeArguments = append(makeArguments, argument)
+		}
+	}
+	return makeCommand, makeArguments, showHelp, nil
 }
 
 func newApp() *compiledbApp {
@@ -231,7 +296,7 @@ OPTIONS:
    {{range .VisibleFlags}}{{.}}
    {{end}}{{end}}{{if .Commands}}
 COMMANDS:
-{{range .Commands}}{{if not .HideHelp}}   {{join .Names ", "}}{{ "\t"}}{{.Usage}}{{ "\n" }}{{end}}{{end}}{{end}}
+{{range .Commands}}{{if not .HideHelp}}   {{join .Names ", "}}{{ "\t"}}{{.Usage}}{{ "\n" }}{{range .VisibleFlags}}      {{.}}{{ "\n" }}{{end}}{{end}}{{end}}{{end}}
 `
 	app := &cli.App{
 		// Compiled:             time.Now()
@@ -258,10 +323,25 @@ COMMANDS:
 		Commands: []*cli.Command{{
 			Name:            "make",
 			Usage:           "Generates compilation database file for an arbitrary GNU Make...",
+			ArgsUsage:       "[MAKE_ARGS]...",
 			SkipFlagParsing: true,
+			HideHelpCommand: true,
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "cmd", Aliases: []string{"c"}, Usage: "Command to be used as make executable."},
+			},
 			Action: func(ctx *cli.Context) error {
+				makeCommand, makeArguments, showHelp, err := parseMakeArguments(ctx.Args().Slice())
+				if err != nil {
+					_, _ = fmt.Fprintf(ctx.App.ErrWriter, "Error: %s\n", err)
+					return cli.Exit("", 2)
+				}
+				if showHelp {
+					cli.HelpPrinter(ctx.App.Writer, cli.CommandHelpTemplate, ctx.Command)
+					return nil
+				}
 				return execute(ctx, true, func(t *internal.Tool, c *cli.Context) error {
-					t.MakeWrap(ctx.Args().Slice())
+					t.Config.MakeCommand = makeCommand
+					t.MakeWrap(makeArguments)
 					return nil
 				})
 			},
@@ -293,6 +373,13 @@ func main() {
 	log.SetOutput(os.Stderr)
 	app := newApp()
 	if err := app.Run(os.Args); err != nil {
+		var exitCoder cli.ExitCoder
+		if errors.As(err, &exitCoder) {
+			if err.Error() != "" {
+				log.Error(err)
+			}
+			os.Exit(exitCoder.ExitCode())
+		}
 		log.Fatal(err)
 	}
 }
