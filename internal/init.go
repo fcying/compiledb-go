@@ -66,7 +66,7 @@ func (t *Tool) compilationDatabaseBuildDir() string {
 	}
 	if t.Config.InputFile != "" && !isStdinInput(t.Config.InputFile) {
 		if absolute, err := filepath.Abs(t.Config.InputFile); err == nil {
-			return ConvertPath(filepath.Dir(absolute))
+			return hostPathToDatabasePath(filepath.Dir(absolute))
 		}
 	}
 	return compilationDatabaseBuildDir("")
@@ -107,7 +107,7 @@ func compilationDatabaseKey(entry compilationDatabaseEntry) string {
 }
 
 func isCompilationDatabaseAbsolutePath(value string) bool {
-	return strings.HasPrefix(value, "/") || isExplicitWindowsPath(value)
+	return strings.HasPrefix(value, "/") || isExplicitWindowsAbsolutePath(value)
 }
 
 func compilationDatabaseCompatibilityKeys(entry compilationDatabaseEntry, buildDir string) []string {
@@ -136,12 +136,12 @@ func compilationDatabaseCompatibilityKeys(entry compilationDatabaseEntry, buildD
 }
 
 func windowsCompilationDatabaseKey(entry compilationDatabaseEntry) (string, bool) {
-	if !isExplicitWindowsPath(entry.Directory) && !isExplicitWindowsPath(entry.File) {
+	if !isExplicitWindowsAbsolutePath(entry.Directory) && !isExplicitWindowsAbsolutePath(entry.File) {
 		return "", false
 	}
 
 	file := strings.ReplaceAll(entry.File, `\`, "/")
-	if isExplicitWindowsPath(entry.File) {
+	if isExplicitWindowsAbsolutePath(entry.File) {
 		return strings.ToLower(file), true
 	}
 	if strings.HasPrefix(file, "/") {
@@ -152,13 +152,13 @@ func windowsCompilationDatabaseKey(entry compilationDatabaseEntry) (string, bool
 }
 
 func windowsPathKey(value string) (string, bool) {
-	if !isExplicitWindowsPath(value) {
+	if !isExplicitWindowsAbsolutePath(value) {
 		return "", false
 	}
 	return strings.ToLower(strings.ReplaceAll(value, `\`, "/")), true
 }
 
-func isExplicitWindowsPath(value string) bool {
+func isExplicitWindowsAbsolutePath(value string) bool {
 	slashPath := strings.ReplaceAll(value, `\`, "/")
 	return strings.HasPrefix(slashPath, "//") || len(slashPath) > 2 &&
 		((slashPath[0] >= 'a' && slashPath[0] <= 'z') || (slashPath[0] >= 'A' && slashPath[0] <= 'Z')) &&
@@ -171,11 +171,11 @@ func compilationDatabaseBuildDir(buildDir string) string {
 	}
 	if buildDir != "" {
 		if absolute, err := filepath.Abs(buildDir); err == nil {
-			return ConvertPath(absolute)
+			return hostPathToDatabasePath(absolute)
 		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		return ConvertPath(cwd)
+		return hostPathToDatabasePath(cwd)
 	}
 	return buildDir
 }
@@ -191,13 +191,13 @@ func resolveLegacyCompilationDatabasePath(entry compilationDatabaseEntry, buildD
 		relativeDirectory = strings.TrimPrefix(relativeDirectory, "./")
 	}
 	if relativeDirectory == "" || relativeDirectory == "." {
-		return strings.TrimSuffix(ConvertPath(buildDir), "/") + "/" + entry.File, true
+		return strings.TrimSuffix(slashPath(buildDir), "/") + "/" + entry.File, true
 	}
 
-	normalizedBuildDir := strings.TrimSuffix(ConvertPath(buildDir), "/")
+	normalizedBuildDir := strings.TrimSuffix(slashPath(buildDir), "/")
 	compareBuildDir := normalizedBuildDir
 	compareDirectory := relativeDirectory
-	if isExplicitWindowsPath(normalizedBuildDir) {
+	if isExplicitWindowsAbsolutePath(normalizedBuildDir) {
 		compareBuildDir = strings.ToLower(compareBuildDir)
 		compareDirectory = strings.ToLower(compareDirectory)
 	}

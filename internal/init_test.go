@@ -457,6 +457,51 @@ func TestCompilationDatabaseKeyUsesSlashSeparatedPaths(t *testing.T) {
 	}
 }
 
+func TestCompilationDatabaseCompatibilityKeysPreserveRawWindowsPath(t *testing.T) {
+	entry := compilationDatabaseEntry{
+		Directory: `C:\Work\Src`,
+		File:      `..\Main.c`,
+	}
+
+	keys := compilationDatabaseCompatibilityKeys(entry, `C:\Work\Src`)
+	want := []string{
+		`C:\Work\Src/..\Main.c`,
+		"c:/work/src/../main.c",
+	}
+	if len(keys) != len(want) {
+		t.Fatalf("unexpected compatibility keys: want %q, got %q", want, keys)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("unexpected compatibility key %d: want %q, got %q", i, want[i], keys[i])
+		}
+	}
+}
+
+func TestExplicitWindowsAbsolutePath(t *testing.T) {
+	for name, test := range map[string]struct {
+		path string
+		want bool
+	}{
+		"drive slash":          {path: "C:/src/main.c", want: true},
+		"drive backslash":      {path: `c:\src\main.c`, want: true},
+		"UNC slash":            {path: "//server/share/main.c", want: true},
+		"UNC backslash":        {path: `\\server\share\main.c`, want: true},
+		"drive relative":       {path: `C:src\main.c`, want: false},
+		"non-letter drive":     {path: "1:/src/main.c", want: false},
+		"POSIX absolute":       {path: "/src/main.c", want: false},
+		"MSYS drive":           {path: "/c/src/main.c", want: false},
+		"relative backslash":   {path: `src\main.c`, want: false},
+		"single leading slash": {path: `\src\main.c`, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := isExplicitWindowsAbsolutePath(test.path); got != test.want {
+				t.Fatalf("unexpected Windows path classification for %q: want %v, got %v", test.path, test.want, got)
+			}
+		})
+	}
+}
+
 func TestWriteJSONKeepsParentSegmentKeysDistinct(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	writeTestJSON(t, outputFile, []map[string]any{

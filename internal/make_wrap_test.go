@@ -790,7 +790,7 @@ func TestMakeWrapTracksGeneratedDryRunDirectory(t *testing.T) {
 	})
 	tool.MakeWrap(nil)
 	commands := readCompilerTestCommands(t, outputFile)
-	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].Directory != ConvertPath(generatedDir) {
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].Directory != trackedPathToSlash(generatedDir) {
 		t.Fatalf("generated dry-run directory was not tracked: status=%d commands=%#v", tool.StatusCode, commands)
 	}
 }
