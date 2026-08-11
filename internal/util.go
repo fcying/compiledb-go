@@ -23,7 +23,9 @@ func strictSourceFile(filename string) error {
 	return nil
 }
 
-func ConvertPath(path string) string {
+// slashPath converts a lexical path to the slash form used by existing
+// compilation database compatibility code. It does not clean the path.
+func slashPath(path string) string {
 	newPath := strings.ReplaceAll(path, "\\", "/")
 
 	if runtime.GOOS == "windows" {
@@ -38,7 +40,21 @@ func ConvertPath(path string) string {
 	return newPath
 }
 
-func IsAbsPath(path string) bool {
+func hostPathToDatabasePath(path string) string {
+	return slashPath(path)
+}
+
+func windowsPathToSlash(path string) string {
+	return slashPath(path)
+}
+
+func trackedPathToSlash(path string) string {
+	return slashPath(path)
+}
+
+// HasPathRootOrVolumePrefix accepts both host and foreign path syntax used by
+// CLI input and output paths. It intentionally includes drive-relative forms.
+func HasPathRootOrVolumePrefix(path string) bool {
 	if strings.HasPrefix(path, "/") {
 		return true
 	}

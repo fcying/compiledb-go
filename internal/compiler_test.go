@@ -746,7 +746,7 @@ func TestCCacheCommandSkipsPredefinedMacros(t *testing.T) {
 	if len(commands) != 1 || slices.Contains(commands[0].Arguments, "-DFROM_RELATIVE_COMPILER=1") {
 		t.Fatalf("ccache command did not skip macro probing: %#v", commands)
 	}
-	if len(commands[0].Arguments) < 3 || commands[0].Arguments[2] != ConvertPath(compiler) {
+	if len(commands[0].Arguments) < 3 || commands[0].Arguments[2] != hostPathToDatabasePath(compiler) {
 		t.Fatalf("expected full path for wrapped compiler, got %#v", commands[0].Arguments)
 	}
 }

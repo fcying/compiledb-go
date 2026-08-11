@@ -111,7 +111,7 @@ func resolveEncoding(ctx *cli.Context) (string, error) {
 func createConfig(ctx *cli.Context, validateEncoding bool) (internal.Config, error) {
 	addArgs := addArguments(ctx)
 	outputFile := ctx.String("output")
-	if outputFile != "-" && !internal.IsAbsPath(outputFile) {
+	if outputFile != "-" && !internal.HasPathRootOrVolumePrefix(outputFile) {
 		cwd, _ := os.Getwd()
 		outputFile = filepath.Join(cwd, outputFile)
 	}
@@ -132,7 +132,7 @@ func createConfig(ctx *cli.Context, validateEncoding bool) (internal.Config, err
 		}
 	}
 	inputFile := ctx.String("parse")
-	if inputFile != "-" && !internal.IsAbsPath(inputFile) {
+	if inputFile != "-" && !internal.HasPathRootOrVolumePrefix(inputFile) {
 		if buildDir != "" {
 			inputFile = filepath.Join(buildDir, inputFile)
 		} else {

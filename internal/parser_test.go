@@ -197,7 +197,7 @@ func TestParseRunsBackticksInTrackedWorkingDirectory(t *testing.T) {
 
 	tool.Parse([]string{"gcc -I`pwd` -c main.c"})
 	commands := readCompilerTestCommands(t, outputFile)
-	want := "-I" + ConvertPath(workingDir)
+	want := "-I" + hostPathToDatabasePath(workingDir)
 	if len(commands) != 1 || !slices.Contains(commands[0].Arguments, want) {
 		t.Fatalf("backtick command used the wrong working directory: want %q, got %#v", want, commands)
 	}
@@ -221,7 +221,7 @@ func TestParseExpandsBackticksBeforeInlineCD(t *testing.T) {
 	tool.Parse([]string{"cd `printf sub` && gcc -c main.c"})
 
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 1 || commands[0].Directory != ConvertPath(childDir) {
+	if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(childDir) {
 		t.Fatalf("backtick-driven cd was not tracked: %#v", commands)
 	}
 }
@@ -285,7 +285,7 @@ func TestParseBackticksDoNotRequireExternalShell(t *testing.T) {
 
 	commands := readCompilerTestCommands(t, outputFile)
 	if len(commands) != 2 || commands[0].File != "builtin.c" || commands[1].File != "valid.c" ||
-		!slices.Contains(commands[0].Arguments, "-I"+ConvertPath(workingDir)) ||
+		!slices.Contains(commands[0].Arguments, "-I"+hostPathToDatabasePath(workingDir)) ||
 		!slices.Contains(commands[0].Arguments, "-DVALUE=pure-go") {
 		t.Fatalf("embedded shell produced unexpected commands: %#v", commands)
 	}
@@ -463,7 +463,7 @@ func TestParseHonorsKnownConditionalBranches(t *testing.T) {
 	})
 	commands := readCompilerTestCommands(t, outputFile)
 	if len(commands) != 2 || commands[0].File != "failed-cd-fallback.c" ||
-		commands[0].Directory != ConvertPath(projectDir) || commands[1].File != "true-and.c" {
+		commands[0].Directory != trackedPathToSlash(projectDir) || commands[1].File != "true-and.c" {
 		t.Fatalf("conditional branches were parsed incorrectly: %#v", commands)
 	}
 }
@@ -539,7 +539,7 @@ func TestParseStopsAtShellComments(t *testing.T) {
 		if !slices.Equal(commands[i].Arguments, want) {
 			t.Fatalf("unexpected arguments for %s:\nwant: %v\ngot:  %v", commands[i].File, want, commands[i].Arguments)
 		}
-		if commands[i].Directory != ConvertPath(workingDir) {
+		if commands[i].Directory != trackedPathToSlash(workingDir) {
 			t.Fatalf("commented Make command changed cwd to %q", commands[i].Directory)
 		}
 	}
@@ -1315,8 +1315,8 @@ func TestParseUsesCompilerWorkingDirectory(t *testing.T) {
 
 	tool.Parse([]string{"clang -working-directory sub -c main.c"})
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 1 || commands[0].Directory != ConvertPath(subDir) ||
-		!slices.Contains(commands[0].Arguments, ConvertPath(subDir)) {
+	if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(subDir) ||
+		!slices.Contains(commands[0].Arguments, hostPathToDatabasePath(subDir)) {
 		t.Fatalf("compiler working directory was not applied: %#v", commands)
 	}
 }
@@ -1498,7 +1498,7 @@ func TestParseFullPathBehindSafeEnvironmentLauncher(t *testing.T) {
 
 	tool.Parse([]string{"env BUILD_MODE=release fake-gcc -c env.c"})
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 1 || commands[0].Arguments[0] != ConvertPath(compiler) {
+	if len(commands) != 1 || commands[0].Arguments[0] != hostPathToDatabasePath(compiler) {
 		t.Fatalf("full path was not resolved behind a safe env launcher: %#v", commands)
 	}
 }
@@ -1534,8 +1534,8 @@ func TestParseAppliesEnvironmentLauncherDirectory(t *testing.T) {
 			tool.Parse([]string{"env " + option + " ./fake-gcc -c main.c"})
 
 			commands := readCompilerTestCommands(t, outputFile)
-			if len(commands) != 1 || commands[0].Directory != ConvertPath(subDir) ||
-				commands[0].Arguments[0] != ConvertPath(compiler) {
+			if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(subDir) ||
+				commands[0].Arguments[0] != hostPathToDatabasePath(compiler) {
 				t.Fatalf("env chdir was not applied to compiler command: %#v", commands)
 			}
 		})
@@ -1589,8 +1589,8 @@ func TestParseStrictPreservesPOSIXColonAndBackslashPaths(t *testing.T) {
 	})
 
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 2 || commands[0].Directory != ConvertPath(colonDir) || commands[0].File != "main.c" ||
-		commands[1].Directory != ConvertPath(projectDir) || commands[1].File != `src\main.c` {
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(colonDir) || commands[0].File != "main.c" ||
+		commands[1].Directory != trackedPathToSlash(projectDir) || commands[1].File != `src\main.c` {
 		t.Fatalf("POSIX colon or backslash path was changed: %#v", commands)
 	}
 }
@@ -1710,14 +1710,79 @@ func TestParsePreservesWindowsCompilerAndPathArguments(t *testing.T) {
 		NoStrict:     true,
 	})
 
-	tool.Parse([]string{`C:\toolchain\bin\gcc.exe -IC:\sdk\include -include C:\cfg\config.h -c C:\src\main.c -o C:\obj\main.o`})
+	tool.Parse([]string{`C:\toolchain\bin\gcc.exe '-DREGEX=\d+' '-DROOT=C:\SDK' '-Wl,C:\lib\foo.a' -IC:\sdk\include -include C:\cfg\config.h -c C:\src\main.c -o C:\obj\main.o`})
 	commands := readCompilerTestCommands(t, outputFile)
 	want := []string{
-		"C:/toolchain/bin/gcc.exe", "-IC:/sdk/include", "-include", "C:/cfg/config.h",
+		"C:/toolchain/bin/gcc.exe", `-DREGEX=\d+`, `-DROOT=C:\SDK`, `-Wl,C:\lib\foo.a`,
+		"-IC:/sdk/include", "-include", "C:/cfg/config.h",
 		"-c", "C:/src/main.c", "-o", "C:/obj/main.o",
 	}
 	if len(commands) != 1 || commands[0].File != "C:/src/main.c" || !slices.Equal(commands[0].Arguments, want) {
 		t.Fatalf("Windows command arguments were not preserved:\nwant: %v\ngot:  %#v", want, commands)
+	}
+}
+
+func TestJoinTrackedPathDomains(t *testing.T) {
+	for name, test := range map[string]struct {
+		base        string
+		child       string
+		windowsMode bool
+		want        string
+	}{
+		"POSIX parent segment": {
+			base: "/project/build", child: "../src", want: "/project/src",
+		},
+		"Windows absolute resets": {
+			base: "C:/project/build", child: `D:\src\..\obj`, windowsMode: true, want: "D:/obj",
+		},
+		"same drive relative": {
+			base: "C:/project/build", child: `c:..\src`, windowsMode: true, want: "C:/project/src",
+		},
+		"different drive relative": {
+			base: "C:/project", child: `D:sub\dir`, windowsMode: true, want: "D:sub/dir",
+		},
+		"UNC": {
+			base: `\\server\share\project`, child: `sub\..\obj`, windowsMode: true, want: "//server/share/project/obj",
+		},
+		"Windows relative separators": {
+			base: "/project", child: `sub\dir`, windowsMode: true, want: "/project/sub/dir",
+		},
+		"POSIX colon": {
+			base: "/project", child: "1:a", want: "/project/1:a",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := joinTrackedPathWithWindowsMode(test.base, test.child, test.windowsMode); got != test.want {
+				t.Fatalf("unexpected tracked path: want %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+func TestCleanTrackedPathDomains(t *testing.T) {
+	for name, test := range map[string]struct {
+		path        string
+		windowsMode bool
+		want        string
+	}{
+		"POSIX": {
+			path: "/project/build/../src", want: "/project/src",
+		},
+		"Windows drive": {
+			path: `C:\project\build\..\src`, windowsMode: true, want: "C:/project/src",
+		},
+		"Windows UNC": {
+			path: `\\server\share\build\..\src`, windowsMode: true, want: "//server/share/src",
+		},
+		"POSIX backslash filename": {
+			path: `src\build\..\main.c`, want: `src\build\..\main.c`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := cleanTrackedPathWithWindowsMode(test.path, test.windowsMode); got != test.want {
+				t.Fatalf("unexpected cleaned tracked path: want %q, got %q", test.want, got)
+			}
+		})
 	}
 }
 
@@ -1786,11 +1851,11 @@ func TestParseDoesNotApplyMakeDirectoryToSiblingCommand(t *testing.T) {
 
 			commands := readCompilerTestCommands(t, outputFile)
 			if separator == "; " {
-				if len(commands) != 2 || commands[0].Directory != ConvertPath(projectDir) ||
-					commands[1].Directory != ConvertPath(filepath.Join(projectDir, "sub")) {
+				if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(projectDir) ||
+					commands[1].Directory != trackedPathToSlash(filepath.Join(projectDir, "sub")) {
 					t.Fatalf("make directory leaked into sibling command: %#v", commands)
 				}
-			} else if len(commands) != 1 || commands[0].Directory != ConvertPath(projectDir) || commands[0].File != "child.c" {
+			} else if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(projectDir) || commands[0].File != "child.c" {
 				t.Fatalf("unknown conditional branch produced an entry or directory frame: %#v", commands)
 			}
 		})
@@ -1814,7 +1879,7 @@ func TestParseTracksMakeDirectoryAfterInlineCD(t *testing.T) {
 
 	tool.Parse([]string{"cd sub && make -C child", "gcc -c nested.c"})
 	commands := readCompilerTestCommands(t, outputFile)
-	wantDir := ConvertPath(filepath.Join(projectDir, "sub", "child"))
+	wantDir := trackedPathToSlash(filepath.Join(projectDir, "sub", "child"))
 	if len(commands) != 1 || commands[0].Directory != wantDir {
 		t.Fatalf("make directory did not use the preceding cd: %#v", commands)
 	}
@@ -1834,7 +1899,7 @@ func TestParseDoesNotTrackConditionallySkippedMake(t *testing.T) {
 
 	tool.Parse([]string{"false && make -C sub", "gcc -c parent.c"})
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 1 || commands[0].Directory != ConvertPath(projectDir) {
+	if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("conditionally skipped make changed directory: %#v", commands)
 	}
 }
@@ -1860,8 +1925,8 @@ func TestParseMatchesMakeLeaveQuotesAndProtectsBaseFrame(t *testing.T) {
 		"gcc -c parent.c",
 	})
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 2 || commands[0].Directory != ConvertPath(childDir) ||
-		commands[1].Directory != ConvertPath(projectDir) {
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("make leave handling corrupted the directory stack: %#v", commands)
 	}
 }
@@ -1885,8 +1950,8 @@ func TestParseSupportsLegacyMakeDirectoryQuotes(t *testing.T) {
 		"gcc -c parent.c",
 	})
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 2 || commands[0].Directory != ConvertPath(childDir) ||
-		commands[1].Directory != ConvertPath(projectDir) {
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("legacy Make directory markers were not tracked: %#v", commands)
 	}
 }
@@ -1911,8 +1976,8 @@ func TestParsePreservesQuotesInsideMakeDirectory(t *testing.T) {
 		"gcc -c parent.c",
 	})
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 2 || commands[0].Directory != ConvertPath(childDir) ||
-		commands[1].Directory != ConvertPath(projectDir) {
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("quotes inside Make directory were not preserved: %#v", commands)
 	}
 }
@@ -1938,8 +2003,8 @@ func TestParseConfirmsMakeCommandDirectoryFrame(t *testing.T) {
 	})
 
 	commands := readCompilerTestCommands(t, outputFile)
-	if len(commands) != 2 || commands[0].Directory != ConvertPath(childDir) ||
-		commands[1].Directory != ConvertPath(projectDir) {
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("make directory frame was duplicated: %#v", commands)
 	}
 }
@@ -1973,7 +2038,7 @@ func TestParseResolvesRelativeMakeDirectoryForMacrosAndPath(t *testing.T) {
 	if len(commands) != 1 {
 		t.Fatalf("expected one command, got %#v", commands)
 	}
-	if commands[0].Directory != ConvertPath(workingDir) || commands[0].Arguments[0] != ConvertPath(compiler) ||
+	if commands[0].Directory != trackedPathToSlash(workingDir) || commands[0].Arguments[0] != hostPathToDatabasePath(compiler) ||
 		!slices.Contains(commands[0].Arguments, "-DFROM_MAKE_C=1") {
 		t.Fatalf("relative make directory was not resolved: %#v", commands[0])
 	}

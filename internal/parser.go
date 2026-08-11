@@ -648,24 +648,24 @@ func compilerArguments(arguments []string, invocation compilerInvocation) []stri
 	return append(result, arguments[invocation.optionsStart:]...)
 }
 
-func trackedPathJoin(base, child string) string {
-	windowsContext := runtime.GOOS == "windows" || isExplicitWindowsPath(base) || isExplicitWindowsPath(child)
-	return trackedPathJoinContext(base, child, windowsContext)
+func joinTrackedPath(base, child string) string {
+	windowsContext := runtime.GOOS == "windows" || isExplicitWindowsAbsolutePath(base) || isExplicitWindowsAbsolutePath(child)
+	return joinTrackedPathWithWindowsMode(base, child, windowsContext)
 }
 
-func trackedPathJoinContext(base, child string, windowsContext bool) string {
+func joinTrackedPathWithWindowsMode(base, child string, windowsContext bool) string {
 	if windowsContext {
-		base = ConvertPath(base)
-		child = ConvertPath(child)
+		base = trackedPathToSlash(base)
+		child = trackedPathToSlash(child)
 	}
 	if windowsContext && len(child) >= 2 && isASCIIAlpha(child[0]) && child[1] == ':' && (len(child) == 2 || child[2] != '/') {
 		if len(base) >= 2 && strings.EqualFold(base[:2], child[:2]) {
-			return trackedPathJoinContext(base, child[2:], true)
+			return joinTrackedPathWithWindowsMode(base, child[2:], true)
 		}
-		return cleanTrackedPathContext(child, true)
+		return cleanTrackedPathWithWindowsMode(child, true)
 	}
-	if strings.HasPrefix(child, "/") || windowsContext && isExplicitWindowsPath(child) {
-		return cleanTrackedPathContext(child, windowsContext)
+	if strings.HasPrefix(child, "/") || windowsContext && isExplicitWindowsAbsolutePath(child) {
+		return cleanTrackedPathWithWindowsMode(child, windowsContext)
 	}
 	joined := path.Join(base, child)
 	if strings.HasPrefix(base, "//") && !strings.HasPrefix(joined, "//") {
@@ -675,12 +675,12 @@ func trackedPathJoinContext(base, child string, windowsContext bool) string {
 }
 
 func cleanTrackedPath(value string) string {
-	return cleanTrackedPathContext(value, runtime.GOOS == "windows" || isExplicitWindowsPath(value))
+	return cleanTrackedPathWithWindowsMode(value, runtime.GOOS == "windows" || isExplicitWindowsAbsolutePath(value))
 }
 
-func cleanTrackedPathContext(value string, windowsContext bool) string {
+func cleanTrackedPathWithWindowsMode(value string, windowsContext bool) string {
 	if windowsContext {
-		value = ConvertPath(value)
+		value = trackedPathToSlash(value)
 	}
 	cleaned := path.Clean(value)
 	if strings.HasPrefix(value, "//") && !strings.HasPrefix(cleaned, "//") {
@@ -794,7 +794,7 @@ func makeCommandDirectory(line, workingDir string) (string, bool) {
 	}
 
 	directory := workingDir
-	windowsContext := runtime.GOOS == "windows" || executableBase(arguments[0]) == "mingw32-make" || isExplicitWindowsPath(workingDir)
+	windowsContext := runtime.GOOS == "windows" || executableBase(arguments[0]) == "mingw32-make" || isExplicitWindowsAbsolutePath(workingDir)
 	found := false
 	for i := 1; i < len(arguments); i++ {
 		argument := arguments[i]
@@ -816,8 +816,8 @@ func makeCommandDirectory(line, workingDir string) (string, bool) {
 		default:
 			continue
 		}
-		windowsContext = windowsContext || isExplicitWindowsPath(value)
-		directory = trackedPathJoinContext(directory, value, windowsContext)
+		windowsContext = windowsContext || isExplicitWindowsAbsolutePath(value)
+		directory = joinTrackedPathWithWindowsMode(directory, value, windowsContext)
 		found = true
 	}
 	return directory, found
@@ -842,7 +842,7 @@ func makeVirtualDirectories(arguments []string, workingDir string) ([]string, bo
 		if options && strings.HasPrefix(argument, "-") {
 			return nil, false
 		}
-		directories = append(directories, trackedPathJoin(workingDir, argument))
+		directories = append(directories, joinTrackedPath(workingDir, argument))
 	}
 	return directories, parents && len(directories) > 0
 }
@@ -983,7 +983,7 @@ func quoteDoubleQuotedSubstitution(output string) string {
 	return quoted.String()
 }
 
-func windowsPathToken(argument string) bool {
+func isRawWindowsAbsolutePathToken(argument string) bool {
 	if len(argument) >= 3 && isASCIIAlpha(argument[0]) &&
 		argument[1] == ':' && (argument[2] == '/' || argument[2] == '\\') {
 		return true
@@ -1043,7 +1043,7 @@ func restoreWindowsArguments(arguments, rawArguments []string, invocation compil
 		if attached := attachedPathOptionValue(rawArgument); attached != "" {
 			value = attached
 		}
-		if windowsPathToken(value) {
+		if isRawWindowsAbsolutePathToken(value) {
 			windowsContext = true
 			break
 		}
@@ -1056,27 +1056,27 @@ func restoreWindowsArguments(arguments, rawArguments []string, invocation compil
 	for i, rawArgument := range rawArguments {
 		normalized := ""
 		switch {
-		case windowsPathToken(rawArgument):
-			normalized = ConvertPath(rawArgument)
+		case isRawWindowsAbsolutePathToken(rawArgument):
+			normalized = windowsPathToSlash(rawArgument)
 		case windowsContext && i <= invocation.compilerIndex && windowsRelativePathToken(rawArgument):
-			normalized = ConvertPath(rawArgument)
+			normalized = windowsPathToSlash(rawArgument)
 		case attachedPathOptionValue(rawArgument) != "":
 			prefix := pathOptionPrefix(rawArgument)
 			value := attachedPathOptionValue(rawArgument)
-			if windowsPathToken(value) || windowsContext && windowsRelativePathToken(value) {
-				normalized = prefix + ConvertPath(value)
+			if isRawWindowsAbsolutePathToken(value) || windowsContext && windowsRelativePathToken(value) {
+				normalized = prefix + windowsPathToSlash(value)
 			}
 		default:
 			if windowsContext && i > 0 && compilerPathOptionOperand(rawArguments[i-1]) && windowsRelativePathToken(rawArgument) {
-				normalized = ConvertPath(rawArgument)
+				normalized = windowsPathToSlash(rawArgument)
 			} else if windowsContext {
 				_, input := inputs[i]
-				if input && hasSourceExtension(ConvertPath(rawArgument)) && windowsRelativePathToken(rawArgument) {
-					normalized = ConvertPath(rawArgument)
+				if input && hasSourceExtension(windowsPathToSlash(rawArgument)) && windowsRelativePathToken(rawArgument) {
+					normalized = windowsPathToSlash(rawArgument)
 				}
 			}
 		}
-		if normalized != "" && pathWithoutSeparators(arguments[i]) == pathWithoutSeparators(normalized) {
+		if normalized != "" && separatorlessPathRestorationKey(arguments[i]) == separatorlessPathRestorationKey(normalized) {
 			arguments[i] = normalized
 		}
 	}
@@ -1143,13 +1143,13 @@ func defaultCompilerStart(arguments []string, workingDir string) defaultCompiler
 				if index+1 >= len(arguments) {
 					return defaultCompilerLocation{}
 				}
-				launcherWorkingDir = trackedPathJoin(launcherWorkingDir, arguments[index+1])
+				launcherWorkingDir = joinTrackedPath(launcherWorkingDir, arguments[index+1])
 				index += 2
 			case strings.HasPrefix(argument, "-C") && len(argument) > 2:
-				launcherWorkingDir = trackedPathJoin(launcherWorkingDir, argument[2:])
+				launcherWorkingDir = joinTrackedPath(launcherWorkingDir, argument[2:])
 				index++
 			case strings.HasPrefix(argument, "--chdir="):
-				launcherWorkingDir = trackedPathJoin(launcherWorkingDir, strings.TrimPrefix(argument, "--chdir="))
+				launcherWorkingDir = joinTrackedPath(launcherWorkingDir, strings.TrimPrefix(argument, "--chdir="))
 				index++
 			case argument == "-u" || argument == "--unset":
 				if index+1 >= len(arguments) {
@@ -1349,13 +1349,13 @@ func applyCompilerWorkingDirectory(arguments []string, invocation compilerInvoca
 			continue
 		}
 		if argument == "-working-directory" && i+1 < len(arguments) {
-			directory = trackedPathJoin(workingDir, arguments[i+1])
+			directory = joinTrackedPath(workingDir, arguments[i+1])
 			arguments[i+1] = directory
 			i++
 			continue
 		}
 		if value, ok := strings.CutPrefix(argument, "-working-directory="); ok {
-			directory = trackedPathJoin(workingDir, value)
+			directory = joinTrackedPath(workingDir, value)
 			arguments[i] = "-working-directory=" + directory
 			continue
 		}
@@ -1447,7 +1447,7 @@ func (t *Tool) processCompileCommand(command string, workingDir string, line int
 			t.Logger.Debugf("found compile:%s, but not found file, ignore command", arguments[0])
 			return nil
 		}
-		files = []string{ConvertPath(filePath)}
+		files = []string{slashPath(filePath)}
 	}
 	arguments = insertCompilerArguments(arguments, invocation, t.Config.AddArgs)
 	entryDirectory := applyCompilerWorkingDirectory(arguments, invocation, compilerWorkingDir)
@@ -1468,13 +1468,13 @@ func (t *Tool) processCompileCommand(command string, workingDir string, line int
 		}
 		if !t.Config.NoStrict {
 			fileFullPath := sourceFile
-			windowsContext := runtime.GOOS == "windows" || isExplicitWindowsPath(entryDirectory) || isExplicitWindowsPath(sourceFile)
+			windowsContext := runtime.GOOS == "windows" || isExplicitWindowsAbsolutePath(entryDirectory) || isExplicitWindowsAbsolutePath(sourceFile)
 			normalizedSource := sourceFile
 			if windowsContext {
-				normalizedSource = ConvertPath(normalizedSource)
+				normalizedSource = windowsPathToSlash(normalizedSource)
 			}
-			if !strings.HasPrefix(normalizedSource, "/") && !(windowsContext && isExplicitWindowsPath(normalizedSource)) {
-				fileFullPath = trackedPathJoinContext(entryDirectory, sourceFile, windowsContext)
+			if !strings.HasPrefix(normalizedSource, "/") && !(windowsContext && isExplicitWindowsAbsolutePath(normalizedSource)) {
+				fileFullPath = joinTrackedPathWithWindowsMode(entryDirectory, sourceFile, windowsContext)
 			}
 			if err := strictSourceFile(fileFullPath); err != nil {
 				t.Logger.Warnf("skip source %s: %v", fileFullPath, err)
@@ -1505,7 +1505,7 @@ func (t *Tool) processCompileCommand(command string, workingDir string, line int
 	if t.Config.FullPath && invocation.explicit && fullPathSafe {
 		compileFullPath := compilerFullPath(arguments[invocation.compilerIndex], compilerWorkingDir)
 		if compileFullPath != "" {
-			arguments[invocation.compilerIndex] = ConvertPath(compileFullPath)
+			arguments[invocation.compilerIndex] = hostPathToDatabasePath(compileFullPath)
 		}
 	}
 
@@ -1540,7 +1540,7 @@ func (t *Tool) Parse(buildLog []string) {
 	} else {
 		workingDir, _ = os.Getwd()
 	}
-	workingDir = ConvertPath(workingDir)
+	workingDir = trackedPathToSlash(workingDir)
 	t.Logger.Infof("workingDir: %s", workingDir)
 
 	// Compile parser regexes {{{
@@ -1707,7 +1707,7 @@ func (t *Tool) Parse(buildLog []string) {
 					previousStatus = shellStatusUnknown
 					continue
 				}
-				nextDir := trackedPathJoin(lineWorkingDir, arguments[1])
+				nextDir := joinTrackedPath(lineWorkingDir, arguments[1])
 				if t.Config.NoStrict {
 					lineWorkingDir = nextDir
 					previousStatus = shellStatusSuccess

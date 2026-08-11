@@ -346,8 +346,8 @@ func sourceFilesFromArguments(arguments []string, invocation compilerInvocation)
 	return files
 }
 
-func pathWithoutSeparators(value string) string {
-	return strings.ReplaceAll(ConvertPath(value), "/", "")
+func separatorlessPathRestorationKey(value string) string {
+	return strings.ReplaceAll(slashPath(value), "/", "")
 }
 
 func hasSourceExtension(argument string) bool {
@@ -418,7 +418,7 @@ func isBuiltinMacroWithReplayDiagnostic(name string) bool {
 }
 
 func isSourceArgument(argument, sourceFile string) bool {
-	return ConvertPath(argument) == ConvertPath(sourceFile)
+	return slashPath(argument) == slashPath(sourceFile)
 }
 
 func predefinedMacroProbeArgsChecked(arguments []string, language string) ([]string, string) {

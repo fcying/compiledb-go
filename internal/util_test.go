@@ -55,3 +55,24 @@ func TestWindowsQuoteArgument(t *testing.T) {
 		}
 	}
 }
+
+func TestHasPathRootOrVolumePrefix(t *testing.T) {
+	for name, test := range map[string]struct {
+		path string
+		want bool
+	}{
+		"empty":                  {path: "", want: false},
+		"relative":               {path: "src/main.c", want: false},
+		"POSIX root":             {path: "/src/main.c", want: true},
+		"backslash root":         {path: `\src\main.c`, want: true},
+		"Windows absolute":       {path: `C:\src\main.c`, want: true},
+		"Windows drive relative": {path: `C:src\main.c`, want: true},
+		"foreign volume prefix":  {path: "1:value", want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := HasPathRootOrVolumePrefix(test.path); got != test.want {
+				t.Fatalf("unexpected prefix result for %q: want %v, got %v", test.path, test.want, got)
+			}
+		})
+	}
+}
