@@ -687,12 +687,19 @@ func TestMakeWrapPreservesQuotedMakeFlagAssignments(t *testing.T) {
 }
 
 func TestMakeWrapDetectsEnvironmentStdinBeforeUnmatchedQuote(t *testing.T) {
-	makeExecutable, err := exec.LookPath("make")
-	if err != nil {
-		t.Skip("GNU Make is not available")
-	}
 	t.Setenv("MAKEFLAGS", "-f - FOO='x")
 	tmpDir := t.TempDir()
+	makeExecutable := filepath.Join(tmpDir, "fake-make.sh")
+	contents := `#!/bin/sh
+input=$(cat)
+case "$input" in
+  *"cc -c unmatched-quote.c"*) echo 'cc -c unmatched-quote.c' ;;
+  *) exit 9 ;;
+esac
+`
+	if err := os.WriteFile(makeExecutable, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
 	stdin, err := os.CreateTemp(tmpDir, "Makefile")
 	if err != nil {
 		t.Fatalf("create stdin Makefile failed: %v", err)
@@ -712,7 +719,14 @@ func TestMakeWrapDetectsEnvironmentStdinBeforeUnmatchedQuote(t *testing.T) {
 	defer func() { makePath = oldMakePath }()
 
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")
-	tool := newTestTool(t, Config{OutputFile: outputFile, RegexCompile: RegexCompile, RegexFile: RegexFile, NoBuild: true, NoStrict: true})
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+		Encoding:     EncodingRaw,
+	})
 	tool.MakeWrap(nil)
 	commands := readCompilerTestCommands(t, outputFile)
 	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "unmatched-quote.c" {

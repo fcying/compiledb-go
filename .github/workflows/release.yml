@@ -11,87 +11,184 @@ defaults:
     shell: bash
 
 jobs:
-  release:
+  prepare:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      VERSION: ""
-      COMMIT: ""
-      RELEASE: ""
-      GH_TOKEN: ${{ github.token }}
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      release: ${{ steps.release.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-      - run: go version
 
       - name: Check need release
-        id: check_release
+        id: release
         run: |
-          version=""
-          release="false"
+          release=false
           new_ver=$(grep -Po "v\d+\.\d+\.\d+" cmd/compiledb/main.go)
           cur_ver=$(git describe --abbrev=0 --tags)
           commit=$(git rev-parse --short HEAD)
-          if [[ "$new_ver" != "$cur_ver" && $(git branch --show-current) == "main" ]]; then
+          if [[ "$new_ver" != "$cur_ver" && "$GITHUB_REF" == "refs/heads/main" ]]; then
             version=$new_ver
-            release="true"
+            release=true
           else
-            version=dev-$new_ver\($commit\)
-            sed -E "s|v[0-9]+\.[0-9]+\.[0-9]+|$version|" cmd/compiledb/main.go -i
+            version="dev-${new_ver}(${commit})"
           fi
-          echo "RELEASE=$release" >> $GITHUB_ENV
-          echo "VERSION=$version" >> $GITHUB_ENV
-          echo "COMMIT=$commit" >> $GITHUB_ENV
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
 
-      - name: Install dependencies
-        run: go mod tidy
+  linux-amd64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
 
-      - name: Build
+      - name: Check format
         run: |
-          out=$(pwd)/build
-          mkdir -p $out
+          unformatted=$(gofmt -l .)
+          if [[ -n "$unformatted" ]]; then
+            printf 'Files need gofmt:\n%s\n' "$unformatted"
+            exit 1
+          fi
 
-          cd ./cmd/compiledb
+      - name: Check dependencies
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
-          echo "Build linux-amd64 version"
-          GOOS=linux GOARCH=amd64 go build
-          chmod +x compiledb 
-          ./compiledb -h | head -1 || true
-          tar cJvf compiledb.txz compiledb
-          mv compiledb.txz $out/compiledb-linux-amd64.txz
+      - name: Vet
+        run: go vet ./...
 
-          echo "Build linux-arm64 version"
-          GOOS=linux GOARCH=arm64 go build
-          chmod +x compiledb 
-          tar cJvf compiledb.txz compiledb
-          mv compiledb.txz $out/compiledb-linux-arm64.txz
+      - name: Test
+        run: go test ./...
 
-          echo "Build windows-amd64 version"
-          GOOS=windows GOARCH=amd64 go build
-          7z a compiledb.zip compiledb.exe
-          mv compiledb.zip $out/compiledb-windows-amd64.zip
+      - name: Race test
+        run: go test -race ./...
 
-          echo "Build darwin-arm64 version"
-          GOOS=darwin GOARCH=arm64 go build
-          chmod +x compiledb 
-          tar cJvf compiledb.txz compiledb
-          mv compiledb.txz $out/compiledb-darwin-arm64.txz
+      - name: Build and smoke test
+        run: |
+          test "$(go env GOOS)/$(go env GOARCH)" = "linux/amd64"
+          mkdir -p dist
+          go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb ./cmd/compiledb
+          ./dist/compiledb --help
+          tar cJf dist/compiledb-linux-amd64.txz -C dist compiledb
 
-          # delete draft
-          gh release delete dev --cleanup-tag -y || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: dist/compiledb-linux-amd64.txz
+          if-no-files-found: error
 
-          ls -la $out
+  linux-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build and smoke test
+        run: |
+          test "$(go env GOOS)/$(go env GOARCH)" = "linux/arm64"
+          mkdir -p dist
+          go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb ./cmd/compiledb
+          ./dist/compiledb --help
+          tar cJf dist/compiledb-linux-arm64.txz -C dist compiledb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-arm64
+          path: dist/compiledb-linux-arm64.txz
+          if-no-files-found: error
+
+  windows-amd64:
+    needs: prepare
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build and smoke test
+        run: |
+          test "$(go env GOOS)/$(go env GOARCH)" = "windows/amd64"
+          mkdir -p dist
+          go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb.exe ./cmd/compiledb
+          ./dist/compiledb.exe --help
+          (cd dist && 7z a compiledb-windows-amd64.zip compiledb.exe)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-amd64
+          path: dist/compiledb-windows-amd64.zip
+          if-no-files-found: error
+
+  darwin-arm64:
+    needs: prepare
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build and smoke test
+        run: |
+          test "$(go env GOOS)/$(go env GOARCH)" = "darwin/arm64"
+          mkdir -p dist
+          go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb ./cmd/compiledb
+          ./dist/compiledb --help
+          tar cJf dist/compiledb-darwin-arm64.txz -C dist compiledb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-arm64
+          path: dist/compiledb-darwin-arm64.txz
+          if-no-files-found: error
+
+  release:
+    needs: [ prepare, linux-amd64, linux-arm64, windows-amd64, darwin-arm64 ]
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: build
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la build
+
+      - name: Delete previous development release
+        run: |
+          if gh release view dev >/dev/null 2>&1; then
+            gh release delete dev -y
+          fi
 
       - name: Release
-        if: ${{ env.RELEASE == 'true' }}
+        if: ${{ needs.prepare.outputs.release == 'true' }}
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ env.VERSION }}
+          tag: ${{ needs.prepare.outputs.version }}
           allowUpdates: true
           artifactErrorsFailBuild: true
           generateReleaseNotes: true
@@ -103,7 +200,7 @@ jobs:
           tag: dev
           artifactErrorsFailBuild: true
           generateReleaseNotes: true
-          name: ${{ env.VERSION }}
+          name: ${{ needs.prepare.outputs.version }}
           prerelease: true
           draft: true
           artifacts: "build/*"

@@ -269,10 +269,10 @@ could use it with some great tools, such as:
 - [Neovim][neovim] + [LanguageClient-neovim][lsp] + [cquery][cquery] + [deoplete][deoplete]
 - [Neovim][neovim] + [ALE][ale] + [ccls][ccls]
 
-Current release automation cross-builds Linux amd64/arm64, Windows amd64, and macOS arm64
-artifacts on an Ubuntu runner. Only the Linux amd64 artifact receives a `compiledb -h` runtime
-smoke check there; the workflow does not currently run the test suite or native Windows, macOS,
-or arm64 runtime tests.
+The release workflow supports Linux amd64/arm64, Windows amd64, and macOS arm64. Each artifact is
+built on a native GitHub-hosted runner and must successfully execute `compiledb --help` before it
+can be published. Linux amd64 additionally gates releases on `gofmt`, `go vet`, the full test suite,
+and the race detector. Other platforms are unsupported and receive no release artifacts.
 
 ## License
 GNU GPLv3

@@ -270,7 +270,11 @@ func TestRunMakeCommandBoundsContinuousOutputAfterLeaderExit(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "continuous-output.pid")
 	ctx := context.Background()
-	cmd := processUnixHelperCommand(ctx, "continuous-parent", "COMPILEDB_TEST_PROCESS_PID_FILE="+pidFile)
+	// The race runtime's default one-second exit delay is unrelated to output draining.
+	cmd := processUnixHelperCommand(ctx, "continuous-parent",
+		"COMPILEDB_TEST_PROCESS_PID_FILE="+pidFile,
+		"GORACE=atexit_sleep_ms=0",
+	)
 	configureMakeCommand(cmd, ctx)
 
 	type commandResult struct {
