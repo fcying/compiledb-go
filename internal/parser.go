@@ -22,9 +22,7 @@ var (
 	RegexFile    string = `^.*\s+-c.*\s(?:(?:"|')(.*?\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu))(?:"|')|([^\s"']+\.(?i:c|cpp|cc|cxx|c\+\+|s|m|mm|cu)))(\s|$)`
 
 	// We want to skip such lines from configure to avoid spurious MAKE expansion errors.
-	checkingMake        = regexp.MustCompile(`^checking whether .* sets \$\(\w+\)\.\.\. (yes|no)$`)
-	shellControlCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:!\s*)?(?:if|then|elif|else|fi|case|esac|for|while|until|do|done|select|function)(?:\s|$)`)
-	shellFunction       = regexp.MustCompile(`(?:^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)`)
+	checkingMake = regexp.MustCompile(`^checking whether .* sets \$\(\w+\)\.\.\. (yes|no)$`)
 )
 
 const maxBuildLogLineSize = 100 * 1024 * 1024
@@ -35,11 +33,6 @@ type parserPatterns struct {
 	exclude        []*regexp.Regexp
 	defaultCompile bool
 	defaultFile    bool
-}
-
-type shellCommand struct {
-	text      string
-	separator string
 }
 
 type logicalLine struct {
@@ -230,231 +223,6 @@ func shellLexicalError(line string) *shellTokenizationError {
 		return &shellTokenizationError{offset: len(line) - 1, reason: "trailing escape"}
 	}
 	return nil
-}
-
-func splitShellCommands(line string) ([]shellCommand, bool) {
-	commands := []shellCommand{}
-	start := 0
-	separator := ""
-	var quote byte
-	escaped := false
-	wordStarted := false
-	commandSubstitutionDepth := 0
-	groupDepth := 0
-	flush := func(end int, nextSeparator string) {
-		if command := strings.TrimSpace(line[start:end]); command != "" {
-			commands = append(commands, shellCommand{text: command, separator: separator})
-		}
-		separator = nextSeparator
-	}
-
-	for i := 0; i < len(line); i++ {
-		character := line[i]
-		if escaped {
-			escaped = false
-			wordStarted = true
-			continue
-		}
-		if quote != 0 {
-			if character == '\\' && quote != '\'' {
-				escaped = true
-			} else if character == quote {
-				quote = 0
-			}
-			continue
-		}
-		if commandSubstitutionDepth > 0 {
-			if character == '(' {
-				commandSubstitutionDepth++
-			} else if character == ')' {
-				commandSubstitutionDepth--
-			}
-			continue
-		}
-		if character == '$' && i+1 < len(line) && line[i+1] == '(' {
-			wordStarted = true
-			commandSubstitutionDepth = 1
-			i++
-			continue
-		}
-		if character == '#' && !wordStarted {
-			if strings.TrimSpace(line[start:i]) == "" && (separator == "&&" || separator == "||") {
-				return commands, false
-			}
-			flush(i, "")
-			return commands, true
-		}
-		switch character {
-		case '\\':
-			escaped = true
-			wordStarted = true
-		case '\'', '"', '`':
-			quote = character
-			wordStarted = true
-		case ' ', '\t', '\r', '\n':
-			wordStarted = false
-		case '(':
-			groupDepth++
-			wordStarted = false
-		case ')':
-			if groupDepth > 0 {
-				groupDepth--
-			}
-			wordStarted = false
-		case ';':
-			if groupDepth > 0 {
-				wordStarted = false
-				continue
-			}
-			flush(i, ";")
-			start = i + 1
-			wordStarted = false
-		case '&', '|':
-			if groupDepth == 0 && i+1 < len(line) && line[i+1] == character {
-				flush(i, line[i:i+2])
-				i++
-				start = i + 1
-			}
-			wordStarted = false
-		case '<', '>':
-			wordStarted = false
-		default:
-			wordStarted = true
-		}
-	}
-	flush(len(line), "")
-	return commands, true
-}
-
-func hasUnsupportedShellControlStructure(line string) bool {
-	var quote byte
-	escaped := false
-	wordStarted := false
-	visible := make([]byte, len(line))
-	for i := 0; i < len(line); i++ {
-		character := line[i]
-		if escaped {
-			escaped = false
-			wordStarted = true
-			visible[i] = ' '
-			continue
-		}
-		if quote != 0 {
-			visible[i] = ' '
-			if character == '\\' && quote != '\'' {
-				escaped = true
-			} else if quote == '"' && character == '$' && i+1 < len(line) && line[i+1] == '(' {
-				return true
-			} else if character == quote {
-				quote = 0
-			}
-			continue
-		}
-		if character == '$' && i+1 < len(line) && line[i+1] == '(' {
-			return true
-		}
-		if character == '#' && !wordStarted {
-			break
-		}
-		switch character {
-		case '\\':
-			escaped = true
-			wordStarted = true
-			visible[i] = ' '
-		case '\'', '"', '`':
-			quote = character
-			wordStarted = true
-			visible[i] = ' '
-		case ' ', '\t', '\r', '\n', ';', '|', '&', '<', '>', '(', ')':
-			wordStarted = false
-			visible[i] = character
-		case '{', '}':
-			return true
-		default:
-			wordStarted = true
-			visible[i] = character
-		}
-	}
-	text := string(visible)
-	return shellControlCommand.MatchString(text) || shellFunction.MatchString(text)
-}
-
-func hasUnsupportedShellSyntax(line string) bool {
-	var quote byte
-	escaped := false
-	inBacktick := false
-	for i := 0; i < len(line); i++ {
-		character := line[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if inBacktick {
-			if character == '\\' {
-				escaped = true
-			} else if character == '`' {
-				inBacktick = false
-			}
-			continue
-		}
-		if quote == '\'' {
-			if character == quote {
-				quote = 0
-			}
-			continue
-		}
-		if quote == '"' {
-			if character == '\\' {
-				escaped = true
-			} else if character == quote {
-				quote = 0
-			} else if character == '`' {
-				inBacktick = true
-			} else if character == '$' && i+1 < len(line) && line[i+1] == '(' {
-				return true
-			}
-			continue
-		}
-		switch character {
-		case '\\':
-			escaped = true
-		case '\'', '"':
-			quote = character
-		case '`':
-			inBacktick = true
-		case '<', '>', '(', ')', '{', '}':
-			return true
-		case '$':
-			if i+1 < len(line) && line[i+1] == '(' {
-				return true
-			}
-		case '|', '&':
-			return true
-		}
-	}
-	return false
-}
-
-func shellCommandExecution(separator string, previous shellCommandStatus) (bool, bool) {
-	switch separator {
-	case "", ";":
-		return true, true
-	case "&&":
-		if previous == shellStatusSuccess {
-			return true, true
-		}
-		if previous == shellStatusFailure {
-			return false, true
-		}
-	case "||":
-		if previous == shellStatusFailure {
-			return true, true
-		}
-		if previous == shellStatusSuccess {
-			return false, true
-		}
-	}
-	return false, false
 }
 
 type logicalLineIssue struct {
@@ -703,7 +471,87 @@ func isMakeExecutable(argument string) bool {
 }
 
 func isMakeExecutableFromArguments(arguments []string) bool {
-	return len(arguments) > 0 && isMakeExecutable(arguments[0])
+	index := shellExecutableIndex(arguments)
+	return index < len(arguments) && isMakeExecutable(arguments[index])
+}
+
+func shellExecutableIndex(arguments []string) int {
+	index := 0
+	for index < len(arguments) && isShellAssignment(arguments[index]) {
+		index++
+	}
+	return index
+}
+
+type makeArgumentSpec struct {
+	option      bool
+	stop        bool
+	valid       bool
+	valueMode   makeOptionArgumentMode
+	directory   bool
+	valueInline bool
+	inlineValue string
+}
+
+func classifyMakeArgument(argument string) makeArgumentSpec {
+	if argument == "--" {
+		return makeArgumentSpec{option: true, stop: true, valid: true}
+	}
+	if strings.HasPrefix(argument, "--") {
+		name, ok := canonicalMakeLongOption(argument)
+		if !ok {
+			return makeArgumentSpec{}
+		}
+		_, value, attached := strings.Cut(argument, "=")
+		valueMode := makeLongOptionArgumentMode(argument)
+		if attached && valueMode == makeOptionArgumentNone {
+			return makeArgumentSpec{}
+		}
+		return makeArgumentSpec{
+			option:      true,
+			valid:       true,
+			valueMode:   valueMode,
+			directory:   name == "directory",
+			valueInline: attached,
+			inlineValue: value,
+		}
+	}
+	if len(argument) < 2 || argument[0] != '-' {
+		return makeArgumentSpec{valid: true}
+	}
+	for index := 1; index < len(argument); index++ {
+		option := argument[index]
+		valueMode, known := makeShortOptionArgumentMode(option)
+		if !known {
+			return makeArgumentSpec{}
+		}
+		if valueMode == makeOptionArgumentNone {
+			continue
+		}
+		return makeArgumentSpec{
+			option:      true,
+			valid:       true,
+			valueMode:   valueMode,
+			directory:   option == 'C',
+			valueInline: index+1 < len(argument),
+			inlineValue: argument[index+1:],
+		}
+	}
+	return makeArgumentSpec{option: true, valid: true}
+}
+
+func malformedShellLineRelevant(line, workingDir string, patterns parserPatterns) bool {
+	for _, segment := range shellDiagnosticSegments(line) {
+		arguments, _ := splitMakeCommand(segment)
+		commandIndex := shellExecutableIndex(arguments)
+		if commandIndex < len(arguments) && arguments[commandIndex] == "cd" ||
+			isMakeExecutableFromArguments(arguments) ||
+			commandContainsCompiler(segment, arguments, workingDir, patterns) ||
+			compilerBacktickCandidate(segment, workingDir) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitMakeCommand(line string) ([]string, bool) {
@@ -789,32 +637,47 @@ func splitMakeCommand(line string) ([]string, bool) {
 
 func makeCommandDirectory(line, workingDir string) (string, bool) {
 	arguments, ok := splitMakeCommand(line)
-	if !ok || len(arguments) == 0 || !isMakeExecutable(arguments[0]) {
+	if !ok {
+		return "", false
+	}
+	return makeCommandDirectoryFromArguments(arguments, workingDir)
+}
+
+func makeCommandDirectoryFromArguments(arguments []string, workingDir string) (string, bool) {
+	commandIndex := shellExecutableIndex(arguments)
+	if commandIndex >= len(arguments) || !isMakeExecutable(arguments[commandIndex]) {
 		return "", false
 	}
 
 	directory := workingDir
-	windowsContext := runtime.GOOS == "windows" || executableBase(arguments[0]) == "mingw32-make" || isExplicitWindowsAbsolutePath(workingDir)
+	windowsContext := runtime.GOOS == "windows" || executableBase(arguments[commandIndex]) == "mingw32-make" ||
+		isExplicitWindowsAbsolutePath(workingDir)
 	found := false
-	for i := 1; i < len(arguments); i++ {
-		argument := arguments[i]
-		if argument == "--" {
+	for i := commandIndex + 1; i < len(arguments); i++ {
+		spec := classifyMakeArgument(arguments[i])
+		if !spec.valid {
+			return "", false
+		}
+		if spec.stop {
 			break
 		}
-		var value string
-		switch {
-		case argument == "-C" || argument == "--directory":
+		if spec.valueMode == makeOptionArgumentNone ||
+			spec.valueMode == makeOptionArgumentOptionalAttached && !spec.valueInline {
+			continue
+		}
+		value := spec.inlineValue
+		if !spec.valueInline {
 			if i+1 >= len(arguments) {
 				return "", false
 			}
 			i++
 			value = arguments[i]
-		case strings.HasPrefix(argument, "-C") && len(argument) > 2:
-			value = argument[2:]
-		case strings.HasPrefix(argument, "--directory="):
-			value = strings.TrimPrefix(argument, "--directory=")
-		default:
+		}
+		if !spec.directory {
 			continue
+		}
+		if value == "" {
+			return "", false
 		}
 		windowsContext = windowsContext || isExplicitWindowsAbsolutePath(value)
 		directory = joinTrackedPathWithWindowsMode(directory, value, windowsContext)
@@ -824,13 +687,14 @@ func makeCommandDirectory(line, workingDir string) (string, bool) {
 }
 
 func makeVirtualDirectories(arguments []string, workingDir string) ([]string, bool) {
-	if len(arguments) == 0 || executableBase(arguments[0]) != "mkdir" {
+	commandIndex := shellExecutableIndex(arguments)
+	if commandIndex >= len(arguments) || executableBase(arguments[commandIndex]) != "mkdir" {
 		return nil, false
 	}
 	parents := false
 	directories := []string{}
 	options := true
-	for _, argument := range arguments[1:] {
+	for _, argument := range arguments[commandIndex+1:] {
 		if options && argument == "--" {
 			options = false
 			continue
@@ -861,13 +725,17 @@ func hasVirtualDirectory(directories map[string]struct{}, directory string) bool
 	return false
 }
 
-func makeDirectoryEvent(line, event string) (string, bool) {
+func makeDirectoryEvent(line, event, makeCommand string) (string, bool) {
 	marker := ": " + event + " directory "
 	index := strings.Index(line, marker)
-	if index < 0 || !strings.Contains(strings.ToLower(line[:index]), "make") {
+	if index < 0 || !isMakeDirectoryMarkerPrefix(strings.TrimSpace(line[:index]), makeCommand) {
 		return "", false
 	}
 	value := strings.TrimSpace(line[index+len(marker):])
+	return makeDirectoryMarkerValue(value)
+}
+
+func makeDirectoryMarkerValue(value string) (string, bool) {
 	if len(value) < 2 {
 		return "", false
 	}
@@ -880,6 +748,27 @@ func makeDirectoryEvent(line, event string) (string, bool) {
 		return "", false
 	}
 	return value[1 : len(value)-1], true
+}
+
+func isMakeDirectoryMarkerPrefix(prefix, makeCommand string) bool {
+	if strings.HasSuffix(prefix, "]") {
+		open := strings.LastIndexByte(prefix, '[')
+		if open < 0 || open == len(prefix)-2 {
+			return false
+		}
+		for _, character := range prefix[open+1 : len(prefix)-1] {
+			if character < '0' || character > '9' {
+				return false
+			}
+		}
+		prefix = prefix[:open]
+	}
+	if strings.Contains(prefix, `\`) && !isRawWindowsAbsolutePathToken(prefix) {
+		return false
+	}
+	base := executableBase(prefix)
+	return isMakeExecutable(prefix) || strings.HasSuffix(base, "-make") ||
+		makeCommand != "" && base == executableBase(makeCommand)
 }
 
 func (t *Tool) expandNestedCommands(line, workingDir string) (string, bool, *shellTokenizationError) {
@@ -1566,12 +1455,15 @@ func (t *Tool) Parse(buildLog []string) {
 		}
 		t.Logger.Debug("New command:", line)
 
-		// Track make-reported directory changes {{{
-		markerLine := ""
-		if commands, _ := splitShellCommands(line); len(commands) == 1 && commands[0].separator == "" {
-			markerLine = commands[0].text
+		commandList, commandListErr := parseShellCommandList(line)
+		makeCommand := t.Config.MakeCommand
+		if makeCommand == "" {
+			makeCommand = makePath
 		}
-		if directory, ok := makeDirectoryEvent(markerLine, "Entering"); ok {
+
+		// Track make-reported directory changes {{{
+		markerLine := compatibleMakeDirectoryMarker(commandList, commandListErr, line, makeCommand)
+		if directory, ok := makeDirectoryEvent(markerLine, "Entering", makeCommand); ok {
 			enterDir := cleanTrackedPath(directory)
 			if len(dirStack) > 0 && dirStack[0].provisional {
 				dirStack[0] = directoryFrame{path: enterDir}
@@ -1581,7 +1473,7 @@ func (t *Tool) Parse(buildLog []string) {
 			workingDir = dirStack[0].path
 			t.Logger.Infof("entering change workingDir: %s", workingDir)
 			continue
-		} else if directory, ok := makeDirectoryEvent(markerLine, "Leaving"); ok {
+		} else if directory, ok := makeDirectoryEvent(markerLine, "Leaving", makeCommand); ok {
 			leaveDir := cleanTrackedPath(directory)
 			for i := 0; i < len(dirStack)-1; i++ {
 				if cleanTrackedPath(dirStack[i].path) != leaveDir {
@@ -1598,35 +1490,56 @@ func (t *Tool) Parse(buildLog []string) {
 		if checkingMake.MatchString(line) {
 			continue
 		}
-		if hasUnsupportedShellControlStructure(line) {
-			t.Logger.Debugf("skip unsupported shell control structure: %s", line)
+		if commandListErr != nil {
+			if malformedShellLineRelevant(line, workingDir, patterns) {
+				parseErr := shellLexicalError(line)
+				if parseErr == nil {
+					parseErr = shellParseError(commandListErr)
+				}
+				t.logTokenizationFailure(lineNumber, workingDir, parseErr)
+			}
+			continue
+		}
+		if !supportedShellCommandList(commandList, makeCommand) {
+			t.Logger.Debugf("skip unsupported shell structure: %s", line)
 			continue
 		}
 
 		lineWorkingDir := workingDir
 		pendingMakeDir := ""
 		pendingMakeSafe := false
-		previousStatus := shellStatusSuccess
-		shellCommands, complete := splitShellCommands(line)
-		if !complete {
-			t.Logger.Debugf("skip incomplete shell conditional: %s", line)
-			continue
+		pendingMakeGeneration := 0
+		summarizeCommand := func(commandText, commandName string, staticName bool) shellCommandSummary {
+			arguments, ok := splitMakeCommand(commandText)
+			if !ok {
+				return shellCommandSummary{statuses: shellStatusEither, changesState: true}
+			}
+			commandIndex := shellExecutableIndex(arguments)
+			if commandIndex >= len(arguments) {
+				return shellCommandSummary{statuses: shellStatusEither, changesState: true}
+			}
+			status := shellStatusEither
+			if staticName && (commandName == "true" || commandName == ":") {
+				status = shellStatusMaySucceed
+			} else if staticName && commandName == "false" {
+				status = shellStatusMayFail
+			}
+			changesState := !staticName || commandName == "cd"
+			if !changesState && isMakeExecutable(commandName) {
+				arguments[commandIndex] = commandName
+				_, changesState = makeCommandDirectoryFromArguments(arguments, lineWorkingDir)
+			}
+			if !changesState && t.makeDirectoryMarkers && executableBase(commandName) == "mkdir" {
+				arguments[commandIndex] = commandName
+				_, changesState = makeVirtualDirectories(arguments, lineWorkingDir)
+			}
+			return shellCommandSummary{statuses: status, changesState: changesState}
 		}
-		for _, shellCommand := range shellCommands {
-			execute, known := shellCommandExecution(shellCommand.separator, previousStatus)
-			if !known {
-				previousStatus = shellStatusUnknown
-				pendingMakeSafe = false
-				continue
-			}
-			if !execute {
-				continue
-			}
-			commandText := shellCommand.text
+		processCommand := func(commandText, commandName string, staticName bool) shellCommandResult {
 			originalCommandText := commandText
-			if hasUnsupportedShellSyntax(commandText) {
-				previousStatus = shellStatusUnknown
-				continue
+			failureResult := func() shellCommandResult {
+				summary := summarizeCommand(originalCommandText, commandName, staticName)
+				return shellCommandResult{status: shellStatusUnknown, safe: staticName && !summary.changesState}
 			}
 			rawArguments, rawOK := splitMakeCommand(commandText)
 			needsExpansion := false
@@ -1637,21 +1550,27 @@ func (t *Tool) Parse(buildLog []string) {
 			} else {
 				needsExpansion = patterns.compile.MatchString(commandText)
 			}
-			if rawOK && len(rawArguments) > 0 {
-				needsExpansion = needsExpansion || rawArguments[0] == "cd" || isMakeExecutableFromArguments(rawArguments) ||
-					t.makeDirectoryMarkers && executableBase(rawArguments[0]) == "mkdir"
+			if rawOK {
+				commandIndex := shellExecutableIndex(rawArguments)
+				if commandIndex < len(rawArguments) {
+					needsExpansion = needsExpansion || staticName && (commandName == "cd" ||
+						isMakeExecutable(commandName) ||
+						t.makeDirectoryMarkers && executableBase(commandName) == "mkdir")
+				}
 			}
 			if compilerCandidateExpansion {
 				var found bool
 				var ok bool
 				var parseErr *shellTokenizationError
 				commandText, found, ok, parseErr = t.expandNextNestedCommand(commandText, lineWorkingDir)
-				if !ok || !found {
+				if !ok {
 					if parseErr != nil {
 						t.logTokenizationFailure(lineNumber, lineWorkingDir, parseErr)
 					}
-					previousStatus = shellStatusUnknown
-					continue
+					return shellCommandResult{status: shellStatusUnknown, safe: true}
+				}
+				if !found {
+					return failureResult()
 				}
 				candidateArguments, parsed := splitMakeCommand(commandText)
 				if !parsed {
@@ -1663,13 +1582,17 @@ func (t *Tool) Parse(buildLog []string) {
 							t.splitArgs(commandText, lineNumber, lineWorkingDir)
 						}
 					}
-					previousStatus = shellStatusUnknown
-					continue
+					return failureResult()
 				}
 				if !commandContainsCompiler(commandText, candidateArguments, lineWorkingDir, patterns) {
-					previousStatus = shellStatusUnknown
-					continue
+					return failureResult()
 				}
+				candidateIndex := shellExecutableIndex(candidateArguments)
+				if candidateIndex >= len(candidateArguments) {
+					return failureResult()
+				}
+				commandName = candidateArguments[candidateIndex]
+				staticName = true
 				needsExpansion = true
 			}
 			if needsExpansion && strings.Contains(commandText, "`") {
@@ -1680,70 +1603,72 @@ func (t *Tool) Parse(buildLog []string) {
 					if parseErr != nil {
 						t.logTokenizationFailure(lineNumber, lineWorkingDir, parseErr)
 					}
-					previousStatus = shellStatusUnknown
-					continue
+					return failureResult()
 				}
 			}
 			arguments, ok := splitMakeCommand(commandText)
 			if !ok {
-				if len(arguments) > 0 && (arguments[0] == "cd" || isMakeExecutableFromArguments(arguments) ||
-					commandContainsCompiler(commandText, arguments, lineWorkingDir, patterns)) {
+				commandIndex := shellExecutableIndex(arguments)
+				if commandIndex < len(arguments) && arguments[commandIndex] == "cd" ||
+					isMakeExecutableFromArguments(arguments) ||
+					commandContainsCompiler(commandText, arguments, lineWorkingDir, patterns) {
 					t.splitArgs(commandText, lineNumber, lineWorkingDir)
 				}
-				previousStatus = shellStatusUnknown
-				continue
+				return failureResult()
 			}
-			if t.makeDirectoryMarkers {
+			commandIndex := shellExecutableIndex(arguments)
+			if commandIndex >= len(arguments) {
+				return failureResult()
+			}
+			if staticName {
+				arguments[commandIndex] = commandName
+			}
+			commandArguments := arguments[commandIndex:]
+			if t.makeDirectoryMarkers && staticName && executableBase(commandName) == "mkdir" {
 				if directories, recognized := makeVirtualDirectories(arguments, lineWorkingDir); recognized {
 					for _, directory := range directories {
 						virtualDirectories[cleanTrackedPath(directory)] = struct{}{}
 					}
-					previousStatus = shellStatusSuccess
-					continue
+					return shellCommandResult{status: shellStatusSuccess, safe: true}
 				}
 			}
-			if ok && len(arguments) > 0 && arguments[0] == "cd" {
-				if len(arguments) != 2 {
-					previousStatus = shellStatusUnknown
-					continue
+			if staticName && commandName == "cd" {
+				if len(commandArguments) != 2 {
+					return shellCommandResult{status: shellStatusUnknown, safe: false}
 				}
-				nextDir := joinTrackedPath(lineWorkingDir, arguments[1])
+				nextDir := joinTrackedPath(lineWorkingDir, commandArguments[1])
 				if t.Config.NoStrict {
 					lineWorkingDir = nextDir
-					previousStatus = shellStatusSuccess
-					continue
+					return shellCommandResult{status: shellStatusSuccess, safe: true}
 				}
 				info, err := os.Stat(nextDir)
 				virtual := hasVirtualDirectory(virtualDirectories, nextDir)
 				if (err != nil || !info.IsDir()) && !(t.makeDirectoryMarkers && virtual) {
-					previousStatus = shellStatusFailure
-					continue
+					return shellCommandResult{status: shellStatusFailure, safe: true}
 				}
 				lineWorkingDir = nextDir
-				previousStatus = shellStatusSuccess
 				t.Logger.Infof("Temporarily change workingDir: %s", lineWorkingDir)
-				continue
+				return shellCommandResult{status: shellStatusSuccess, safe: true}
 			}
 
-			if enterDir, ok := makeCommandDirectory(commandText, lineWorkingDir); ok {
+			if enterDir, ok := makeCommandDirectoryFromArguments(arguments, lineWorkingDir); staticName &&
+				isMakeExecutable(commandName) && ok {
 				pendingMakeDir = enterDir
 				pendingMakeSafe = true
-				previousStatus = shellStatusUnknown
+				pendingMakeGeneration++
 			}
 
 			if !commandContainsCompiler(commandText, arguments, lineWorkingDir, patterns) {
-				if isMakeExecutableFromArguments(arguments) {
-					previousStatus = shellStatusUnknown
-					continue
+				if staticName && isMakeExecutable(commandName) {
+					return shellCommandResult{status: shellStatusUnknown, safe: true}
 				}
-				if len(arguments) == 1 && (arguments[0] == "true" || arguments[0] == ":") {
-					previousStatus = shellStatusSuccess
-				} else if len(arguments) == 1 && arguments[0] == "false" {
-					previousStatus = shellStatusFailure
-				} else {
-					previousStatus = shellStatusUnknown
+				if staticName && (commandName == "true" || commandName == ":") {
+					return shellCommandResult{status: shellStatusSuccess, safe: true}
 				}
-				continue
+				if staticName && commandName == "false" {
+					return shellCommandResult{status: shellStatusFailure, safe: true}
+				}
+				return shellCommandResult{status: shellStatusUnknown, safe: staticName}
 			}
 			for _, parsed := range t.processCompileCommand(commandText, lineWorkingDir, lineNumber, patterns) {
 				command := ShellJoinArgs(parsed.arguments)
@@ -1755,7 +1680,18 @@ func (t *Tool) Parse(buildLog []string) {
 				t.Logger.Infof("Adding command %d: %s", cmdCnt, command)
 				cmdCnt++
 			}
-			previousStatus = shellStatusUnknown
+			return shellCommandResult{status: shellStatusUnknown, safe: true}
+		}
+		statementPendingGeneration := pendingMakeGeneration
+		lineSafe := evaluateShellCommandList(commandList, line, makeCommand, processCommand, summarizeCommand, func() {
+			if pendingMakeGeneration != statementPendingGeneration {
+				pendingMakeSafe = false
+			}
+		}, func(shellEvaluation) {
+			statementPendingGeneration = pendingMakeGeneration
+		})
+		if !lineSafe {
+			pendingMakeSafe = false
 		}
 		if pendingMakeSafe && pendingMakeDir != "" && !t.makeDirectoryMarkers {
 			dirStack = append([]directoryFrame{{path: pendingMakeDir, provisional: true}}, dirStack...)

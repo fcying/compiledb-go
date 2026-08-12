@@ -23,6 +23,7 @@
 - Compiler arguments are parsed with the repository's POSIX-like tokenizer. Preserve quoting, escaped paths, command-style output, and repeated macro arguments.
 - Relevant malformed compiler, `cd`, and Make commands emit a recoverable Error diagnostic containing the build-log line, tracked cwd, reason, and byte offset without the full command. Unrelated malformed output remains silent; parser status stays successful unless canceled.
 - Complex shell groups, functions, and control structures are skipped as a whole. Backslash-newline continuation follows shell joining semantics, does not insert whitespace, and drops malformed or unterminated fragments without changing the successful parser status.
+- A top-level redirected simple command that cannot change tracked state is skipped without discarding independent `;` siblings. Redirected state-changing commands and redirections inside conditionals or complex structures remain fail closed for the logical line.
 
 ## Logging And Output
 

@@ -468,6 +468,200 @@ func TestParseHonorsKnownConditionalBranches(t *testing.T) {
 	}
 }
 
+func TestParseEvaluatesShellASTConservatively(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"false && gcc -c skipped-and.c || gcc -c false-and-or.c",
+		"true || gcc -c skipped-or.c && gcc -c true-or-and.c",
+		"unknown-check && gcc -c unknown-and.c",
+		"unknown-check || gcc -c unknown-or.c",
+		"unknown-check && gcc -c skipped-unknown.c; gcc -c sequential.c",
+		"false && gcc -c skipped-nested.c || false || gcc -c nested-fallback.c",
+		"unknown-check || true && gcc -c absorbed-or.c",
+		"unknown-check && false || gcc -c absorbed-and.c",
+		"gcc -c first.c || true && gcc -c after-compiler.c",
+		"printf '中文'; gcc -c unicode-offset.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	files := make([]string, 0, len(commands))
+	for _, command := range commands {
+		files = append(files, command.File)
+	}
+	want := []string{
+		"false-and-or.c",
+		"true-or-and.c",
+		"sequential.c",
+		"nested-fallback.c",
+		"absorbed-or.c",
+		"absorbed-and.c",
+		"first.c",
+		"after-compiler.c",
+		"unicode-offset.c",
+	}
+	if !slices.Equal(files, want) {
+		t.Fatalf("shell AST branches were evaluated incorrectly:\nwant: %v\ngot:  %v", want, files)
+	}
+}
+
+func TestParseHandlesAssignmentPrefixedCommands(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"MODE=release gcc -c compiler.c",
+		"MODE=release true ignored && gcc -c true.c",
+		"MODE=release false ignored || gcc -c false.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 3 {
+		t.Fatalf("assignment-prefixed commands changed command count: %#v", commands)
+	}
+	wantFiles := []string{"compiler.c", "true.c", "false.c"}
+	for index, want := range wantFiles {
+		if commands[index].File != want {
+			t.Fatalf("assignment-prefixed command %d: want %q, got %#v", index, want, commands)
+		}
+	}
+	for _, command := range commands {
+		if command.Directory != trackedPathToSlash(projectDir) {
+			t.Fatalf("assignment-prefixed command changed cwd: %#v", commands)
+		}
+	}
+}
+
+func TestParseRejectsAssignmentPrefixedTrackedState(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"CDPATH=/ cd tmp; gcc -c cd.c",
+		"PATH=/nonexistent make -C /forged",
+		"MODE=release mkdir -p virtual; cd virtual; gcc -c mkdir.c",
+		"CDPATH=/ :; cd tmp; gcc -c colon.c",
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "parent.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("assignment-prefixed tracked state changed cwd: %#v", commands)
+	}
+}
+
+func TestParseRejectsDynamicTrackedDirectories(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		`cd "$DIR"; gcc -c variable.c`,
+		`cd ~/sub; gcc -c tilde.c`,
+		`cd sub*; gcc -c glob.c`,
+		`cd ""; gcc -c empty.c`,
+		`cd -; gcc -c previous.c`,
+		`make -C "$DIR"`,
+		`make -C sub "$TARGET"`,
+		`make -C sub *`,
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "parent.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("dynamic tracked directory was treated as a literal path: %#v", commands)
+	}
+}
+
+func TestParseRejectsUnsafeStaticShellAnalysis(t *testing.T) {
+	projectDir := t.TempDir()
+	marker := filepath.Join(projectDir, "unsafe-shell-executed")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	nested := "printf marker > " + ShellJoinArgs([]string{marker})
+	tool.Parse([]string{
+		"e\\xit 0; gcc -I`" + nested + "` -c escaped-exit.c",
+		"MODE=${COMPILEDB_AST_UNSET:?stop} true; gcc -I`" + nested + "` -c fatal-expansion.c",
+		`foo\make -C /forged; true`,
+		"gcc -c parent.c",
+	})
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("unsupported shell line executed backtick: %v", err)
+	}
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "parent.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("unsafe shell analysis changed parser state: %#v", commands)
+	}
+}
+
+func TestParseStopsAfterUncertainTrackedState(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"unknown-check || cd sub; gcc -c uncertain-cd.c",
+		"unknown-check || make -C child; gcc -c uncertain-make.c",
+		"unknown-check || cd sub && false || gcc -c absorbed-after-cd.c",
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "parent.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("uncertain tracked state leaked into later commands: %#v", commands)
+	}
+}
+
 func TestParseFailsClosedForComplexShellStructures(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{
@@ -483,7 +677,18 @@ func TestParseFailsClosedForComplexShellStructures(t *testing.T) {
 		`build() { :; gcc -c function.c; }`,
 		`if false; then :; gcc -c conditional.c; fi`,
 		`case value in value) gcc -c case.c;; esac`,
+		`while false; do gcc -c while.c; done; gcc -c while-tail.c`,
+		`for value in one; do gcc -c for.c; done; gcc -c for-tail.c`,
+		`true | gcc -c pipeline.c; gcc -c pipeline-tail.c`,
+		`true & gcc -c background.c`,
+		`! false; gcc -c negated.c`,
+		`exit 0; gcc -c exit.c`,
+		`exec true; gcc -c exec.c`,
+		`eval 'true'; gcc -c eval.c`,
+		`. ./settings; gcc -c dot.c`,
+		`source ./settings; gcc -c source.c`,
 		`echo $(printf '); gcc -c substitution.c;')`,
+		`echo $((1 + 2)); gcc -c arithmetic.c`,
 		`( true;# comment ); gcc -c grouped-comment.c`,
 		`true ># comment; gcc -c redirected-comment.c`,
 		`true 2># comment; gcc -c fd-comment.c`,
@@ -493,6 +698,63 @@ func TestParseFailsClosedForComplexShellStructures(t *testing.T) {
 	commands := readCompilerTestCommands(t, outputFile)
 	if len(commands) != 1 || commands[0].File != "valid.c" {
 		t.Fatalf("complex shell structure leaked commands: %#v", commands)
+	}
+}
+
+func TestParseContinuesPastUnrelatedRedirectedCommands(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		MakeCommand:  "build-tool",
+	})
+
+	tool.Parse([]string{
+		`printf 'building' >&2; gcc -c after-prefix.c`,
+		`gcc -c redirected-compiler.c >/dev/null; gcc -c after-compiler.c`,
+		`gcc -c before-quoted.c; 'FOO=bar' >/dev/null; gcc -c after-quoted.c`,
+		`cd sub >/dev/null; gcc -c uncertain-cwd.c`,
+		`gcc -c before-uncertain.c; cd sub >/dev/null; gcc -c after-uncertain.c`,
+		`gcc -c before-glob.c; c? sub >/dev/null; gcc -c after-glob.c`,
+		`gcc -c before-tilde.c; ~tool >/dev/null; gcc -c after-tilde.c`,
+		`gcc -c before-make.c; make -C sub >/dev/null; gcc -c after-make.c`,
+		`gcc -c before-configured-make.c; build-tool -C sub >/dev/null; gcc -c after-configured-make.c`,
+		`gcc -c before-mkdir.c; mkdir -p sub >/dev/null; gcc -c after-mkdir.c`,
+		`gcc -c before-conditional.c; printf x >/dev/null && gcc -c after-conditional.c`,
+		`gcc -c before-pipeline.c; printf x >/dev/null | cat; gcc -c after-pipeline.c`,
+		`gcc -c before-group.c; { printf x >/dev/null; }; gcc -c after-group.c`,
+		`gcc -c before-dynamic-redir.c; printf x >"$OUTPUT"; gcc -c after-dynamic-redir.c`,
+		`gcc -c before-fatal-redir.c; printf x >${COMPILEDB_REDIRECT_UNSET:?stop}; gcc -c after-fatal-redir.c`,
+		`gcc -c before-invalid-fd.c; printf x >&not-a-fd; gcc -c after-invalid-fd.c`,
+		`gcc -c before-colon.c; : >/definitely/missing/path; gcc -c after-colon.c`,
+		`gcc -c before-times.c; times >/definitely/missing/path; gcc -c after-times.c`,
+		`tool\? >/dev/null; gcc -c escaped-command.c`,
+		`printf x >out\*; gcc -c escaped-redir.c`,
+		`gcc -c parent.c`,
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	wantFiles := []string{
+		"after-prefix.c",
+		"after-compiler.c",
+		"before-quoted.c",
+		"after-quoted.c",
+		"escaped-command.c",
+		"escaped-redir.c",
+		"parent.c",
+	}
+	if len(commands) != len(wantFiles) {
+		t.Fatalf("redirected command changed command count: %#v", commands)
+	}
+	for index, want := range wantFiles {
+		if commands[index].File != want || commands[index].Directory != trackedPathToSlash(projectDir) {
+			t.Fatalf("redirected command %d: want %q in parent cwd, got %#v", index, want, commands)
+		}
 	}
 }
 
@@ -1401,6 +1663,28 @@ func TestParseRecoversFromCommandFailures(t *testing.T) {
 	}
 }
 
+func TestParseContinuesAfterDynamicBacktickFailure(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	t.Setenv("PATH", t.TempDir())
+
+	tool.Parse([]string{
+		"`missing-backtick-tool` -c skipped.c; gcc -c valid.c",
+		"cd `false`; gcc -c uncertain-cwd.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("dynamic backtick failure stopped an independent command: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
 func TestParseReportsTokenizationFailureWithoutCommandContents(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	var logs bytes.Buffer
@@ -1446,6 +1730,86 @@ func TestParseReportsTokenizationFailureWithoutCommandContents(t *testing.T) {
 	}
 	if strings.Contains(diagnostic, "SECRET") || strings.Contains(diagnostic, "ordinary") {
 		t.Fatalf("tokenization diagnostic exposed command contents or logged unrelated output: %q", diagnostic)
+	}
+}
+
+func TestParseDoesNotExecuteBackticksAfterShellParseError(t *testing.T) {
+	projectDir := t.TempDir()
+	marker := filepath.Join(projectDir, "parse-error-executed")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+
+	tool.Parse([]string{
+		"`printf marker > " + ShellJoinArgs([]string{marker}) + "; printf gcc` -c malformed.c && # incomplete",
+		"`printf marker > " + ShellJoinArgs([]string{marker}) + "; printf gcc` -c bare-and.c &&",
+		"`printf marker > " + ShellJoinArgs([]string{marker}) + "; printf gcc` -c bare-or.c ||",
+		"cc -c valid.c",
+	})
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("AST parse-error path executed backtick: %v", err)
+	}
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("AST parse error changed parser result: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	if !strings.Contains(logs.String(), "skip malformed command") {
+		t.Fatalf("missing AST parse-error diagnostic: %q", logs.String())
+	}
+}
+
+func TestParseReportsRelevantShellGrammarErrors(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+
+	tool.Parse([]string{
+		"echo ordinary >",
+		`echo 'gcc -c quoted.c' >`,
+		"gcc -DSECRET=value -c malformed.c >",
+		"cd sub >",
+		"make -C sub |",
+		"true; gcc -DSECRET=sequence -c sequence.c >",
+		"printf x; cd nested >",
+		"echo x; make -C nested |",
+		"gcc -c arithmetic.c $((1 SECRET 2))",
+		"cc -c valid.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("shell grammar errors changed parser result: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	for _, want := range []string{"build log line 3", "build log line 4", "build log line 5", "build log line 6",
+		"build log line 7", "build log line 8", "build log line 9", "at byte", "cwd"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("shell grammar diagnostic lacks %q: %q", want, diagnostic)
+		}
+	}
+	if strings.Count(diagnostic, "skip malformed command") != 7 {
+		t.Fatalf("unexpected shell grammar diagnostic count: %q", diagnostic)
+	}
+	if strings.Contains(diagnostic, "SECRET") || strings.Contains(diagnostic, "ordinary") || strings.Contains(diagnostic, "quoted.c") {
+		t.Fatalf("shell grammar diagnostic exposed command contents or logged unrelated output: %q", diagnostic)
 	}
 }
 
@@ -1815,17 +2179,53 @@ func TestMakeCommandDirectory(t *testing.T) {
 		"UNC":               {line: "make -C sub", base: "//server/share/project", want: "//server/share/project/sub"},
 		"absolute resets":   {line: "make -C one -C /other", base: "/project", want: "/other"},
 		"option terminator": {line: "make -C one -- -C two", base: "/project", want: "/project/one"},
-		"Windows drive":     {line: `mingw32-make -C "C:\Program Files\build"`, base: "/project", want: "C:/Program Files/build"},
-		"Windows UNC":       {line: `make -C "\\server\share\build"`, base: "/project", want: "//server/share/build"},
-		"unquoted UNC":      {line: `make -C \\server\share\build`, base: "/project", want: "//server/share/build"},
-		"relative Windows":  {line: `mingw32-make -C sub\dir`, base: "/project", want: "/project/sub/dir"},
-		"drive relative":    {line: `mingw32-make -C C:sub\dir`, base: "C:/project", want: "C:/project/sub/dir"},
-		"POSIX colon":       {line: `make -C 1:a`, base: "/project", want: "/project/1:a"},
+		"file operand resembles directory": {
+			line: "make -C sub -f -Cevil", base: "/project", want: "/project/sub",
+		},
+		"include operand resembles directory": {
+			line: "make -I -Cfake -C real", base: "/project", want: "/project/real",
+		},
+		"terminator consumed as file operand": {
+			line: "make -C sub -f -- -C two", base: "/project", want: "/project/sub/two",
+		},
+		"long option operand resembles terminator": {
+			line: "make -C sub --file -- -C two", base: "/project", want: "/project/sub/two",
+		},
+		"attached file operand resembles directory": {
+			line: "make -C sub -f-Cevil", base: "/project", want: "/project/sub",
+		},
+		"optional short value ends cluster": {
+			line: "make -C sub -lC/ -j8 -Otarget", base: "/project", want: "/project/sub",
+		},
+		"optional long attached values": {
+			line: "make --jobs=2 --debug=b --output-sync=target --shuffle=reverse -C sub",
+			base: "/project", want: "/project/sub",
+		},
+		"Windows drive":    {line: `mingw32-make -C "C:\Program Files\build"`, base: "/project", want: "C:/Program Files/build"},
+		"Windows UNC":      {line: `make -C "\\server\share\build"`, base: "/project", want: "//server/share/build"},
+		"unquoted UNC":     {line: `make -C \\server\share\build`, base: "/project", want: "//server/share/build"},
+		"relative Windows": {line: `mingw32-make -C sub\dir`, base: "/project", want: "/project/sub/dir"},
+		"drive relative":   {line: `mingw32-make -C C:sub\dir`, base: "C:/project", want: "C:/project/sub/dir"},
+		"POSIX colon":      {line: `make -C 1:a`, base: "/project", want: "/project/1:a"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok := makeCommandDirectory(test.line, test.base)
 			if !ok || got != test.want {
 				t.Fatalf("unexpected make directory: want %q, got %q, ok=%v", test.want, got, ok)
+			}
+		})
+	}
+}
+
+func TestMakeCommandDirectoryRejectsUnknownOptions(t *testing.T) {
+	for _, line := range []string{
+		"make -xC/forged",
+		"make -C sub --unknown-option",
+		"make --always-make=value -C /forged",
+	} {
+		t.Run(line, func(t *testing.T) {
+			if directory, ok := makeCommandDirectory(line, "/project"); ok {
+				t.Fatalf("invalid Make option established directory %q", directory)
 			}
 		})
 	}
@@ -1857,6 +2257,72 @@ func TestParseDoesNotApplyMakeDirectoryToSiblingCommand(t *testing.T) {
 				}
 			} else if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(projectDir) || commands[0].File != "child.c" {
 				t.Fatalf("unknown conditional branch produced an entry or directory frame: %#v", commands)
+			}
+		})
+	}
+}
+
+func TestParseTracksMakeAfterResolvedUnknownCondition(t *testing.T) {
+	for _, line := range []string{
+		"unknown-check || true; make -C sub",
+		"unknown-check || true && make -C sub",
+		"make -C sub; unknown-check || true",
+	} {
+		t.Run(line, func(t *testing.T) {
+			projectDir := t.TempDir()
+			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+			tool := newTestTool(t, Config{
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				BuildDir:     projectDir,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+			})
+			tool.Parse([]string{line, "gcc -c child.c"})
+
+			commands := readCompilerTestCommands(t, outputFile)
+			wantDir := trackedPathToSlash(filepath.Join(projectDir, "sub"))
+			if len(commands) != 1 || commands[0].File != "child.c" || commands[0].Directory != wantDir {
+				t.Fatalf("definitely executed Make command did not establish directory frame: %#v", commands)
+			}
+		})
+	}
+}
+
+func TestParseTracksMakeDirectoryWithDynamicTargets(t *testing.T) {
+	for _, test := range []struct {
+		line string
+		want string
+	}{
+		{line: `make -C sub -- "$TARGET"`, want: "sub"},
+		{line: `make -C sub target*`, want: "sub"},
+		{line: `make -Csub --directory=child -- "$TARGET"`, want: "sub/child"},
+		{line: `make -C sub -f -Cevil`, want: "sub"},
+		{line: `make -I -Cfake -C sub`, want: "sub"},
+		{line: `make -C sub -f -- -C child`, want: "sub/child"},
+		{line: `make -C sub --file -- -C child`, want: "sub/child"},
+		{line: `make -C sub -lC/ -j8 -Otarget`, want: "sub"},
+		{line: `make --jobs=2 --debug=b --output-sync=target --shuffle=reverse -C sub`, want: "sub"},
+	} {
+		t.Run(test.line, func(t *testing.T) {
+			projectDir := t.TempDir()
+			outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+			tool := newTestTool(t, Config{
+				InputFile:    "stdin",
+				OutputFile:   outputFile,
+				BuildDir:     projectDir,
+				RegexCompile: RegexCompile,
+				RegexFile:    RegexFile,
+				NoStrict:     true,
+			})
+			tool.Parse([]string{test.line, "gcc -c child.c"})
+
+			commands := readCompilerTestCommands(t, outputFile)
+			wantDir := filepath.Join(projectDir, filepath.FromSlash(test.want))
+			if len(commands) != 1 || commands[0].File != "child.c" ||
+				commands[0].Directory != trackedPathToSlash(wantDir) {
+				t.Fatalf("dynamic Make target prevented static directory tracking: %#v", commands)
 			}
 		})
 	}
@@ -1979,6 +2445,176 @@ func TestParsePreservesQuotesInsideMakeDirectory(t *testing.T) {
 	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
 		commands[1].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("quotes inside Make directory were not preserved: %#v", commands)
+	}
+}
+
+func TestParseTracksLiteralCommandSubstitutionInMakeDirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "obj$(name)")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		`make: Entering directory "` + childDir + `"`,
+		"gcc -c child.c",
+		`make: Leaving directory "` + childDir + `"`,
+		`true; make: Entering directory '/forged'`,
+		`printf make: Entering directory '/forged-command'`,
+		`notmake: Entering directory '/forged-name'`,
+		`make: Entering directory '/forged-partial'; if`,
+		`make: Entering directory '/forged/garbage' '/..'`,
+		`not\make: Entering directory '/forged-escape'`,
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("literal command substitution in Make marker was not preserved: %#v", commands)
+	}
+}
+
+func TestMakeDirectoryMarkerValue(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  string
+		ok    bool
+	}{
+		{value: `'/project/sub'`, want: "/project/sub", ok: true},
+		{value: `"/project/sub dir"`, want: "/project/sub dir", ok: true},
+		{value: "`/project/sub'", want: "/project/sub", ok: true},
+		{value: `'/project/a'b'`, want: `/project/a'b`, ok: true},
+		{value: `'/project/a'b c'`, want: `/project/a'b c`, ok: true},
+		{value: `'/project/child'"dir'`, want: `/project/child'"dir`, ok: true},
+		{value: `/project/sub`},
+		{value: `'/project/sub"`},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			got, ok := makeDirectoryMarkerValue(test.value)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("makeDirectoryMarkerValue(%q) = %q, %t; want %q, %t",
+					test.value, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
+func TestParseTracksMakeDirectoryContainingApostropheAndSpace(t *testing.T) {
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "a'b c")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"make: Entering directory '" + childDir + "'",
+		"gcc -c child.c",
+		"make: Leaving directory '" + childDir + "'",
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("Make directory marker containing apostrophe and space was not tracked: %#v", commands)
+	}
+}
+
+func TestMakeDirectoryMarkerPrefix(t *testing.T) {
+	for _, test := range []struct {
+		prefix      string
+		makeCommand string
+		want        bool
+	}{
+		{prefix: "make", want: true},
+		{prefix: "make[1]", want: true},
+		{prefix: "/usr/bin/gmake[12]", want: true},
+		{prefix: `C:\\tools\\mingw32-make.exe[2]`, want: true},
+		{prefix: "/opt/tools/custom-make[3]", want: true},
+		{prefix: "/opt/tools/custom-make[3]", makeCommand: "/opt/tools/custom-make", want: true},
+		{prefix: "printf make", want: false},
+		{prefix: `not\make`, want: false},
+		{prefix: `not\custom-make`, makeCommand: "/opt/tools/custom-make", want: false},
+		{prefix: "unrelated", makeCommand: "/opt/tools/custom-make", want: false},
+		{prefix: "notmake", want: false},
+		{prefix: "make[x]", want: false},
+		{prefix: "make[]", want: false},
+	} {
+		t.Run(test.prefix, func(t *testing.T) {
+			if got := isMakeDirectoryMarkerPrefix(test.prefix, test.makeCommand); got != test.want {
+				t.Fatalf("isMakeDirectoryMarkerPrefix(%q, %q) = %t, want %t",
+					test.prefix, test.makeCommand, got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseTracksUnconfiguredCustomMakeDirectoryMarkers(t *testing.T) {
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "sub")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"custom-make[1]: Entering directory '" + childDir + "'",
+		"gcc -c child.c",
+		"custom-make[1]: Leaving directory '" + childDir + "'",
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("unconfigured custom Make directory markers were not tracked: %#v", commands)
+	}
+}
+
+func TestParseTracksConfiguredMakeDirectoryMarkers(t *testing.T) {
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "sub")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	makeCommand := filepath.Join(projectDir, "tools", "custom-make")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		MakeCommand:  makeCommand,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Parse([]string{
+		"custom-make[1]: Entering directory '" + childDir + "'",
+		"gcc -c child.c",
+		"custom-make[1]: Leaving directory '" + childDir + "'",
+		`not\custom-make[1]: Entering directory '/forged'`,
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
+		commands[1].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("configured Make directory markers were not tracked: %#v", commands)
 	}
 }
 
