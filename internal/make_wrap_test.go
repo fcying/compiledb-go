@@ -1123,6 +1123,79 @@ func TestMakeWrapGeneratesSourceCommandsWithoutCompileOnlyFlag(t *testing.T) {
 	}
 }
 
+func TestMakeWrapExpandsCompilerResponseFile(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	responseFile := filepath.Join(projectDir, "arguments.rsp")
+	makeScript := filepath.Join(projectDir, "fake-make.sh")
+	if err := os.WriteFile(responseFile, []byte("-c src/main.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	if err := os.WriteFile(makeScript, []byte("#!/bin/sh\necho 'gcc @arguments.rsp'\n"), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+
+	oldMakePath := makePath
+	makePath = makeScript
+	defer func() { makePath = oldMakePath }()
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "src/main.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) || slices.Contains(commands[0].Arguments, "@arguments.rsp") {
+		t.Fatalf("Make response file was not expanded: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapResponseFileFailureIsRecoverable(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	makeScript := filepath.Join(projectDir, "fake-make.sh")
+	if err := os.WriteFile(filepath.Join(projectDir, "arguments.rsp"), []byte("-DSECRET=value 'unterminated"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	if err := os.WriteFile(makeScript, []byte("#!/bin/sh\necho 'gcc @arguments.rsp -c hidden.c'\necho 'cc -c valid.c'\n"), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+
+	oldMakePath := makePath
+	makePath = makeScript
+	defer func() { makePath = oldMakePath }()
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("Make response failure stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	if !strings.Contains(diagnostic, "response file") || !strings.Contains(diagnostic, "unterminated quote") ||
+		!strings.Contains(diagnostic, "build log line 1") {
+		t.Fatalf("response-file failure was not logged by MakeWrap: %q", diagnostic)
+	}
+	if strings.Contains(diagnostic, "SECRET") || strings.Contains(diagnostic, "hidden.c") {
+		t.Fatalf("Make response diagnostic exposed contents: %q", diagnostic)
+	}
+}
+
 func TestMakeWrapRecoversFromParserCommandFailures(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")

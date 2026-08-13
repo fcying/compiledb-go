@@ -537,6 +537,42 @@ func TestParseAddsAndCachesPredefinedMacrosByConfiguration(t *testing.T) {
 	}
 }
 
+func TestParseExpandsResponseFileBeforeMacroProbe(t *testing.T) {
+	workingDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	if err := os.WriteFile(filepath.Join(workingDir, "arguments.rsp"), []byte("-std=c11 -DORIGINAL=1 -c main.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     workingDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+		Macros:       true,
+	})
+	var compilerArguments []string
+	tool.compilerCommand = func(_ string, arguments ...string) *exec.Cmd {
+		compilerArguments = append([]string(nil), arguments...)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCompilerMacrosHelperProcess$")
+		cmd.Env = append(os.Environ(), "COMPILEDB_TEST_COMPILER_HELPER=success")
+		return cmd
+	}
+
+	tool.Parse([]string{"fake-gcc @arguments.rsp"})
+
+	wantProbe := []string{"-std=c11", "-x", "c", "-dM", "-E", "-"}
+	if !slices.Equal(compilerArguments, wantProbe) {
+		t.Fatalf("macro probe received unexpanded response arguments:\nwant: %v\ngot:  %v", wantProbe, compilerArguments)
+	}
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || !slices.Contains(commands[0].Arguments, "-DORIGINAL=0") ||
+		slices.Contains(commands[0].Arguments, "@arguments.rsp") {
+		t.Fatalf("response-file macro command was not flattened: %#v", commands)
+	}
+}
+
 func TestPredefinedMacroFailureKeepsCommandsAndIsCached(t *testing.T) {
 	for _, mode := range []string{"missing", "exit"} {
 		t.Run(mode, func(t *testing.T) {

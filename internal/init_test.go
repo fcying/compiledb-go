@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,34 @@ func TestGenerateFromStdinDoesNotPanic(t *testing.T) {
 	})
 
 	tool.Generate()
+}
+
+func TestGenerateResolvesResponseFileFromBuildLogDirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	buildLog := filepath.Join(projectDir, "build.log")
+	responseFile := filepath.Join(projectDir, "argument files.rsp")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	if err := os.WriteFile(buildLog, []byte("gcc '@argument files.rsp'\n"), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+	if err := os.WriteFile(responseFile, []byte("-c src/main.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+
+	tool := newTestTool(t, Config{
+		InputFile:    buildLog,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Generate()
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "src/main.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) || slices.Contains(commands[0].Arguments, "@argument files.rsp") {
+		t.Fatalf("build-log response file was not resolved from its directory: status=%d commands=%#v", tool.StatusCode, commands)
+	}
 }
 
 func TestGenerateFromStdinReturnsWhenCanceled(t *testing.T) {

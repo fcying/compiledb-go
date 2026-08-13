@@ -590,7 +590,8 @@ func splitMakeCommand(line string) ([]string, bool) {
 				continue
 			}
 			if character == '\\' {
-				if i+1 < len(line) && line[i+1] == '\\' && (token.Len() == 0 || isAttachedPathOptionStart(token.String())) {
+				if i+1 < len(line) && line[i+1] == '\\' &&
+					(token.Len() == 0 || token.String() == "@" || isAttachedPathOptionStart(token.String())) {
 					token.WriteString(`\\`)
 					i++
 				} else if i+1 < len(line) && strings.ContainsRune(`$\"`, rune(line[i+1])) {
@@ -609,7 +610,8 @@ func splitMakeCommand(line string) ([]string, bool) {
 			quote = character
 			tokenStarted = true
 		case '\\':
-			if i+1 < len(line) && line[i+1] == '\\' && (token.Len() == 0 || isAttachedPathOptionStart(token.String())) {
+			if i+1 < len(line) && line[i+1] == '\\' &&
+				(token.Len() == 0 || token.String() == "@" || isAttachedPathOptionStart(token.String())) {
 				token.WriteString(`\\`)
 				tokenStarted = true
 				i++
@@ -929,7 +931,9 @@ func restoreWindowsArguments(arguments, rawArguments []string, invocation compil
 	windowsContext := runtime.GOOS == "windows"
 	for _, rawArgument := range rawArguments {
 		value := rawArgument
-		if attached := attachedPathOptionValue(rawArgument); attached != "" {
+		if response, ok := responseFilePath(rawArgument); ok {
+			value = response
+		} else if attached := attachedPathOptionValue(rawArgument); attached != "" {
 			value = attached
 		}
 		if isRawWindowsAbsolutePathToken(value) {
@@ -945,6 +949,11 @@ func restoreWindowsArguments(arguments, rawArguments []string, invocation compil
 	for i, rawArgument := range rawArguments {
 		normalized := ""
 		switch {
+		case len(rawArgument) > 1 && rawArgument[0] == '@':
+			value := rawArgument[1:]
+			if isRawWindowsAbsolutePathToken(value) || windowsContext && windowsRelativePathToken(value) {
+				normalized = "@" + windowsPathToSlash(value)
+			}
 		case isRawWindowsAbsolutePathToken(rawArgument):
 			normalized = windowsPathToSlash(rawArgument)
 		case windowsContext && i <= invocation.compilerIndex && windowsRelativePathToken(rawArgument):
@@ -1302,8 +1311,18 @@ func (t *Tool) processCompileCommand(command string, workingDir string, line int
 	if compilerWordIndex >= 0 && compilerWordIndex < len(rawArguments) {
 		rawArguments = rawArguments[compilerWordIndex:]
 	}
+	responseFilesExpanded := false
 	if invocation := parseCompilerInvocation(arguments); invocation.valid {
 		restoreWindowsArguments(arguments, rawArguments, invocation)
+		responseFilesExpanded = hasGNUResponseFiles(arguments, invocation)
+		expanded, err := t.expandCompilerResponseFiles(arguments, invocation, compilerWorkingDir)
+		if err != nil {
+			if t.operationContext().Err() == nil {
+				t.logResponseFileFailure(line, workingDir, err)
+			}
+			return nil
+		}
+		arguments = expanded
 	}
 
 	arguments = normalizeCompilerArgs(arguments)
@@ -1395,6 +1414,12 @@ func (t *Tool) processCompileCommand(command string, workingDir string, line int
 		compileFullPath := compilerFullPath(arguments[invocation.compilerIndex], compilerWorkingDir)
 		if compileFullPath != "" {
 			arguments[invocation.compilerIndex] = hostPathToDatabasePath(compileFullPath)
+		}
+	}
+	if responseFilesExpanded {
+		if err := responseFileEntriesLimit(arguments, len(files)); err != nil {
+			t.logResponseFileFailure(line, workingDir, err)
+			return nil
 		}
 	}
 

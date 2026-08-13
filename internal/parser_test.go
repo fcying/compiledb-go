@@ -978,6 +978,237 @@ func TestParseGeneratesEntriesForSourceFilesWithoutCompileOnlyFlag(t *testing.T)
 	}
 }
 
+func TestParseExpandsCompilerResponseFiles(t *testing.T) {
+	projectDir := t.TempDir()
+	buildDir := filepath.Join(projectDir, "build")
+	sourceDir := filepath.Join(projectDir, "src")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatalf("create build directory failed: %v", err)
+	}
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("create source directory failed: %v", err)
+	}
+	for _, name := range []string{"main.c", "second.cpp", "after.c"} {
+		if err := os.WriteFile(filepath.Join(sourceDir, name), nil, 0o644); err != nil {
+			t.Fatalf("create source %s failed: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "nested.rsp"), []byte("../src/second.cpp"), 0o644); err != nil {
+		t.Fatalf("write nested response file failed: %v", err)
+	}
+	response := "-include fake.c -MF deps.c -target x86_64 -c ../src/main.c @nested.rsp -- ../src/after.c"
+	if err := os.WriteFile(filepath.Join(buildDir, "arguments.rsp"), []byte(response), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		AddArgs:      []string{"-DADDED=1"},
+	})
+	tool.Parse([]string{"env -C build ccache clang @arguments.rsp"})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	wantFiles := []string{"../src/main.c", "../src/second.cpp", "../src/after.c"}
+	if len(commands) != len(wantFiles) {
+		t.Fatalf("expected one entry per response-file source, got %#v", commands)
+	}
+	for index, command := range commands {
+		if command.File != wantFiles[index] || command.Directory != trackedPathToSlash(buildDir) {
+			t.Fatalf("unexpected response-file entry %d: %#v", index, command)
+		}
+		if slices.ContainsFunc(command.Arguments, func(argument string) bool { return strings.HasPrefix(argument, "@") }) {
+			t.Fatalf("response file was not flattened: %v", command.Arguments)
+		}
+		if !slices.Contains(command.Arguments, "--target=x86_64") {
+			t.Fatalf("response argument was not normalized: %v", command.Arguments)
+		}
+		added := slices.Index(command.Arguments, "-DADDED=1")
+		terminator := slices.Index(command.Arguments, "--")
+		if added < 0 || terminator <= added {
+			t.Fatalf("added argument was not inserted before response terminator: %v", command.Arguments)
+		}
+	}
+}
+
+func TestParseAppliesWorkingDirectoryFromResponseFile(t *testing.T) {
+	projectDir := t.TempDir()
+	sourceDir := filepath.Join(projectDir, "src")
+	if err := os.Mkdir(sourceDir, 0o755); err != nil {
+		t.Fatalf("create source directory failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "main.c"), nil, 0o644); err != nil {
+		t.Fatalf("create source failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "arguments.rsp"), []byte("-working-directory src -c main.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+	})
+	tool.Parse([]string{"gcc @arguments.rsp"})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "main.c" || commands[0].Directory != trackedPathToSlash(sourceDir) ||
+		!slices.Contains(commands[0].Arguments, trackedPathToSlash(sourceDir)) {
+		t.Fatalf("response working directory was not applied: %#v", commands)
+	}
+}
+
+func TestParseResponseFileFailureIsRecoverable(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "malformed.rsp"), []byte("-DSECRET=value 'unterminated"), 0o644); err != nil {
+		t.Fatalf("write malformed response file failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "cycle.rsp"), []byte("@cycle.rsp"), 0o644); err != nil {
+		t.Fatalf("write cyclic response file failed: %v", err)
+	}
+
+	var logs bytes.Buffer
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.Parse([]string{
+		"gcc @missing.rsp -c outside.c",
+		"gcc @malformed.rsp -c outside.c",
+		"gcc @cycle.rsp -c outside.c",
+		"cc -c valid.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("response failure stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	for _, want := range []string{"build log line 1", "build log line 2", "build log line 3", "response file", "unterminated quote", "at byte", "recursive expansion", "cwd"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("response diagnostic lacks %q: %q", want, diagnostic)
+		}
+	}
+	if strings.Contains(diagnostic, "SECRET") || strings.Contains(diagnostic, "outside.c") {
+		t.Fatalf("response diagnostic exposed command or file contents: %q", diagnostic)
+	}
+}
+
+func TestParseResponseFileOutputLimitIncludesFinalArguments(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "arguments.rsp"), []byte(strings.Repeat("source.c ", 100)), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	var logs bytes.Buffer
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		AddArgs:      []string{"-DVALUE=" + strings.Repeat("x", 1024*1024)},
+		NoStrict:     true,
+	})
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.Parse([]string{"gcc @arguments.rsp", "cc -c valid.c"})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("response output limit stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	if diagnostic := logs.String(); !strings.Contains(diagnostic, "expanded entries exceed output limit") ||
+		!strings.Contains(diagnostic, "build log line 1") {
+		t.Fatalf("response output limit was not diagnosed: %q", diagnostic)
+	}
+}
+
+func TestParseLeavesUnsupportedResponseFileModesOpaque(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "arguments.rsp"), []byte("-c hidden.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Parse([]string{
+		"clang-cl @arguments.rsp -c explicit-cl.c",
+		"clang --driver-mode=cl @arguments.rsp -c explicit-mode.c",
+		"clang --rsp-quoting=windows @arguments.rsp -c explicit-quoting.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	wantFiles := []string{"explicit-cl.c", "explicit-mode.c", "explicit-quoting.c"}
+	if len(commands) != len(wantFiles) {
+		t.Fatalf("unsupported response modes changed explicit sources: %#v", commands)
+	}
+	for index, command := range commands {
+		if command.File != wantFiles[index] || !slices.Contains(command.Arguments, "@arguments.rsp") {
+			t.Fatalf("unsupported response mode was not kept opaque: %#v", command)
+		}
+	}
+}
+
+func TestRestoreWindowsResponseFileArguments(t *testing.T) {
+	for name, test := range map[string]struct {
+		command string
+		want    []string
+	}{
+		"drive path": {
+			command: `gcc @C:\work\arguments.rsp`,
+			want:    []string{"gcc", "@C:/work/arguments.rsp"},
+		},
+		"quoted path": {
+			command: `gcc @"C:\work dir\arguments.rsp"`,
+			want:    []string{"gcc", "@C:/work dir/arguments.rsp"},
+		},
+		"UNC path": {
+			command: `gcc @\\server\share\arguments.rsp`,
+			want:    []string{"gcc", "@//server/share/arguments.rsp"},
+		},
+		"relative path in Windows context": {
+			command: `C:\tool\gcc.exe @sub\arguments.rsp`,
+			want:    []string{"C:/tool/gcc.exe", "@sub/arguments.rsp"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			arguments, parseErr := splitShellArguments(test.command)
+			if parseErr != nil {
+				t.Fatalf("split command failed: %v", parseErr)
+			}
+			rawArguments, ok := splitMakeCommand(test.command)
+			if !ok {
+				t.Fatal("split raw command failed")
+			}
+			restoreWindowsArguments(arguments, rawArguments, parseCompilerInvocation(arguments))
+			if !slices.Equal(arguments, test.want) {
+				t.Fatalf("unexpected restored arguments:\nwant: %#v\ngot:  %#v", test.want, arguments)
+			}
+		})
+	}
+}
+
 func TestParseRejectsNonCompilerClangTools(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{

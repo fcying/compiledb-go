@@ -843,6 +843,65 @@ func TestDefaultDiagnosticsUseStderr(t *testing.T) {
 	}
 }
 
+func TestResponseFileFailureKeepsStdoutAsJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	buildLog := filepath.Join(tmpDir, "build.log")
+	if err := os.WriteFile(filepath.Join(tmpDir, "arguments.rsp"), []byte("-DSECRET=value 'unterminated"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	if err := os.WriteFile(buildLog, []byte("gcc @arguments.rsp -c hidden.c\ncc -c valid.c\n"), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe failed: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe failed: %v", err)
+	}
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	t.Cleanup(func() { os.Stdout, os.Stderr = oldStdout, oldStderr })
+
+	runErr := newApp().Run([]string{
+		"compiledb",
+		"--parse", buildLog,
+		"--output", "-",
+		"--no-strict",
+	})
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	if runErr != nil {
+		t.Fatalf("CLI run failed: %v", runErr)
+	}
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout failed: %v", err)
+	}
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr failed: %v", err)
+	}
+
+	var commands []internal.Command
+	if err := json.Unmarshal(stdout, &commands); err != nil {
+		t.Fatalf("stdout should be valid JSON, got %q: %v", stdout, err)
+	}
+	if len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("unexpected commands: %#v", commands)
+	}
+	diagnostic := string(stderr)
+	if !strings.Contains(diagnostic, "response file") || !strings.Contains(diagnostic, "unterminated quote") ||
+		!strings.Contains(diagnostic, "build log line 1") {
+		t.Fatalf("expected response-file diagnostic on stderr, got %q", stderr)
+	}
+	if strings.Contains(diagnostic, "SECRET") || strings.Contains(diagnostic, "hidden.c") {
+		t.Fatalf("response-file diagnostic exposed contents: %q", diagnostic)
+	}
+}
+
 func TestFatalDiagnosticsUseStderr(t *testing.T) {
 	if mode := os.Getenv("COMPILEDB_FATAL_DIAGNOSTIC_HELPER"); mode != "" {
 		switch mode {
