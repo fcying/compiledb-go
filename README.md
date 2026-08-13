@@ -20,7 +20,7 @@ Tool for generating [Clang's JSON Compilation Database][compdb] file for GNU
 It's aimed mainly at non-cmake (cmake already generates compilation database)
 large codebases. Inspired by projects like [YCM-Generator][ycm-gen] and [Bear][bear],
 but faster (mainly with large projects), since in most cases it **doesn't need a clean
-build** (as the mentioned tools do) to generate the compilation database file, to
+build** (as YCM-Generator does) to generate the compilation database file, to
 achieve this it uses the make options such as `--dry-run/-n` and `--keep-going/-k`
 to extract the compile commands. Also, it's more **cross-compiling friendly** than
 YCM-generator's fake-toolchanin approach.
