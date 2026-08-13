@@ -463,17 +463,44 @@ func isConflictingLongMakeOption(argument string) bool {
 		name == "no-print-directory" || name == "print-data-base" || name == "help" || name == "version"
 }
 
-func makeLongOptionTakesArgument(argument string) bool {
+type makeOptionArgumentMode uint8
+
+const (
+	makeOptionArgumentNone makeOptionArgumentMode = iota
+	makeOptionArgumentRequired
+	makeOptionArgumentOptionalAttached
+)
+
+func makeLongOptionArgumentMode(argument string) makeOptionArgumentMode {
 	name, ok := canonicalMakeLongOption(argument)
 	if !ok {
-		return false
+		return makeOptionArgumentNone
 	}
 	switch name {
 	case "directory", "file", "makefile", "include-dir", "eval", "old-file", "assume-old",
-		"new-file", "assume-new", "what-if":
-		return true
+		"new-file", "assume-new", "what-if", "jobserver-auth", "jobserver-fds", "jobserver-style":
+		return makeOptionArgumentRequired
+	case "debug", "jobs", "load-average", "max-load", "output-sync", "shuffle":
+		return makeOptionArgumentOptionalAttached
 	default:
-		return false
+		return makeOptionArgumentNone
+	}
+}
+
+func makeLongOptionTakesArgument(argument string) bool {
+	return makeLongOptionArgumentMode(argument) == makeOptionArgumentRequired
+}
+
+func makeShortOptionArgumentMode(option byte) (makeOptionArgumentMode, bool) {
+	switch {
+	case strings.ContainsRune("CEfIoW", rune(option)):
+		return makeOptionArgumentRequired, true
+	case strings.ContainsRune("jlO", rune(option)):
+		return makeOptionArgumentOptionalAttached, true
+	case strings.ContainsRune("bmBdehikLnpqrRsStvw", rune(option)):
+		return makeOptionArgumentNone, true
+	default:
+		return makeOptionArgumentNone, false
 	}
 }
 
