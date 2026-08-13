@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -40,6 +42,37 @@ func TestStrictSourceFileAcceptsOnlyRegularFiles(t *testing.T) {
 		if err := strictSourceFile(filename); err == nil {
 			t.Fatalf("non-regular source was accepted: %q", filename)
 		}
+	}
+}
+
+func TestExpandCompilerResponseFilesRejectsFIFO(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(workingDir, "arguments.rsp"), 0o600); err != nil {
+		t.Fatalf("create response FIFO failed: %v", err)
+	}
+	tool := newTestTool(t, Config{})
+	arguments := []string{"gcc", "@arguments.rsp"}
+	result, err := tool.expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") || result != nil {
+		t.Fatalf("response FIFO was accepted: arguments=%#v error=%v", result, err)
+	}
+}
+
+func TestExpandCompilerResponseFilesAcceptsDoubleSlashAbsolutePath(t *testing.T) {
+	workingDir := t.TempDir()
+	filename := filepath.Join(workingDir, "arguments.rsp")
+	if err := os.WriteFile(filename, []byte("-c main.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	tool := newTestTool(t, Config{})
+	arguments := []string{"gcc", "@/" + filepath.ToSlash(filename)}
+	result, err := tool.expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+	if err != nil {
+		t.Fatalf("expand double-slash response path failed: %v", err)
+	}
+	want := []string{"gcc", "-c", "main.c"}
+	if !slices.Equal(result, want) {
+		t.Fatalf("unexpected response arguments: want %#v, got %#v", want, result)
 	}
 }
 

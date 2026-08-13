@@ -14,7 +14,10 @@ import (
 	"golang.org/x/text/transform"
 )
 
-var errProcessOutputIncomplete = errors.New("process output incomplete")
+var (
+	errProcessOutputIncomplete = errors.New("process output incomplete")
+	errReadLimitExceeded       = errors.New("read limit exceeded")
+)
 
 const (
 	processRelayEnv          = "COMPILEDB_INTERNAL_PROCESS_RELAY"
@@ -236,14 +239,18 @@ func writeFileWithContext(ctx context.Context, file *os.File, data []byte) error
 }
 
 func readFileWithContext(ctx context.Context, file *os.File) ([]byte, error) {
-	return readRelayWithContext(ctx, file)
+	return readRelayWithContext(ctx, file, -1)
+}
+
+func readFileWithContextLimit(ctx context.Context, file *os.File, limit int64) ([]byte, error) {
+	return readRelayWithContext(ctx, file, limit)
 }
 
 func readPathWithContext(ctx context.Context, filename string) ([]byte, error) {
-	return readRelayWithContext(ctx, nil, filename)
+	return readRelayWithContext(ctx, nil, -1, filename)
 }
 
-func readRelayWithContext(ctx context.Context, file *os.File, path ...string) ([]byte, error) {
+func readRelayWithContext(ctx context.Context, file *os.File, limit int64, path ...string) ([]byte, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -278,7 +285,15 @@ func readRelayWithContext(ctx context.Context, file *os.File, path ...string) ([
 		case <-canceled:
 		}
 	}()
-	data, readErr := io.ReadAll(reader)
+	var source io.Reader = reader
+	if limit >= 0 {
+		source = io.LimitReader(reader, limit+1)
+	}
+	data, readErr := io.ReadAll(source)
+	limitExceeded := limit >= 0 && int64(len(data)) > limit
+	if readErr != nil || limitExceeded {
+		_ = command.Process.Kill()
+	}
 	_ = reader.Close()
 	close(canceled)
 	waitErr := <-done
@@ -287,6 +302,9 @@ func readRelayWithContext(ctx context.Context, file *os.File, path ...string) ([
 	}
 	if readErr != nil {
 		return data, readErr
+	}
+	if limitExceeded {
+		return data[:limit], errReadLimitExceeded
 	}
 	return data, waitErr
 }

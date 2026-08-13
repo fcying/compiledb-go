@@ -115,6 +115,13 @@ Backtick expressions are executed by an embedded POSIX interpreter. Their output
 argument data, but explicitly invoked programs must still be available through `PATH`. Do not parse
 untrusted build logs.
 
+GCC and Clang GNU-style `@response-file` arguments are expanded relative to the compiler working
+directory. Nested response files are supported, and the emitted database contains flattened
+arguments so it does not depend on the files afterward. Parsing uses a conservative common GNU
+syntax and rejects malformed, recursive, non-regular, non-UTF-8, or oversized files; only the
+affected compiler command is skipped. `clang-cl`, Clang CL driver mode, Windows response quoting,
+and response-file discovery through custom file regexes are not supported.
+
 ### Output Options
 
 By default, new entries update the existing database. Use `--overwrite/-f` to replace it:
@@ -141,6 +148,8 @@ unsupported probes are skipped. Repeat `--exclude/-e` and `--add-arg/-a` as need
 Build-log processing is buffered and uses `O(build-log size + entries)` memory. Each physical line
 is limited to 100 MiB. In synthetic Linux amd64 tests, direct parsing peaked at about 311 MiB/1.53
 GiB RSS for 100 MiB/500 MiB logs; Make discovery peaked at about 490 MiB/1.95 GiB.
+Each response file is limited to 8 MiB, with per-command limits on recursion, aggregate input,
+argument count, and flattened output size.
 
 ### Windows Support
 
