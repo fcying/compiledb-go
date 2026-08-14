@@ -91,6 +91,13 @@ $ compiledb -n make
 Only successful discovery output updates the database. Make output and diagnostics go to stderr
 when `--output -` is used, keeping stdout valid JSON.
 
+During discovery, recursive `$(MAKE)` commands use the selected GNU Make executable through an
+internal proxy that removes a recipe's `--no-print-directory` and requests directory markers. This
+keeps sibling and nested `-C` directories distinct without changing the real build. Explicit `MAKE`
+selection and Make's `-e/--environment-overrides` semantics are preserved. Hard-coded Make paths,
+wrappers that replace themselves with a hard-coded Make, Makefiles that use `override MAKEFLAGS` to
+disable markers, and saved build logs remain outside this interception.
+
 ### Parse A Build Log
 
 Parse a saved build log, read stdin, or pipe Make output directly:

@@ -120,6 +120,9 @@ jobs:
         with:
           go-version: stable
 
+      - name: Test Make proxy paths
+        run: go test ./internal -run '^TestMakeProxy' -count=1
+
       - name: Build and smoke test
         run: |
           test "$(go env GOOS)/$(go env GOARCH)" = "windows/amd64"

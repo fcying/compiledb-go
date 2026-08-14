@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -762,8 +763,479 @@ func TestMakeWrapPreservesDirectoryOperandStartingWithModeFlag(t *testing.T) {
 	})
 	tool.MakeWrap([]string{"-C", "-qdir"})
 	commands := readCompilerTestCommands(t, outputFile)
-	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "operand.c" {
+	physicalBuildDir, err := filepath.EvalSymlinks(buildDir)
+	if err != nil {
+		t.Fatalf("resolve build directory failed: %v", err)
+	}
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "operand.c" ||
+		commands[0].Directory != trackedPathToSlash(physicalBuildDir) {
 		t.Fatalf("-C operand was changed: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapTracksRecursiveMakeDirectory(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	if err := os.Mkdir(childDir, 0o755); err != nil {
+		t.Fatalf("create child directory failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) -C child\n"), 0o644); err != nil {
+		t.Fatalf("write parent Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte("all:\n\tcc -c child.c\n"), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	physicalChildDir, err := filepath.EvalSymlinks(childDir)
+	if err != nil {
+		t.Fatalf("resolve child directory failed: %v", err)
+	}
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "child.c" ||
+		commands[0].Directory != trackedPathToSlash(physicalChildDir) {
+		t.Fatalf("recursive Make directory was not tracked: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapForcesDirectoryMarkersForRecursiveMake(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	proxyTempDir := filepath.Join(t.TempDir(), "proxy path '$#")
+	if err := os.Mkdir(proxyTempDir, 0o755); err != nil {
+		t.Fatalf("create proxy temporary directory failed: %v", err)
+	}
+	t.Setenv("TMPDIR", proxyTempDir)
+	projectDir := t.TempDir()
+	for _, directory := range []string{"raylib", "raylib/nested", "tests"} {
+		if err := os.MkdirAll(filepath.Join(projectDir, directory), 0o755); err != nil {
+			t.Fatalf("create %s directory failed: %v", directory, err)
+		}
+	}
+	parentMakefile := `all:
+	"$(MAKE)" --no-print-directory -C raylib
+	"$(MAKE)" --no-print-directory -C . root
+	"$(MAKE)" --no-print-directory -C tests
+
+root:
+	cc -c root.c
+`
+	raylibMakefile := `all:
+	cc -c raylib.c
+	"$(MAKE)" --no-print-directory -C nested
+`
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte(parentMakefile), 0o644); err != nil {
+		t.Fatalf("write parent Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "raylib", "Makefile"), []byte(raylibMakefile), 0o644); err != nil {
+		t.Fatalf("write raylib Makefile failed: %v", err)
+	}
+	for directory, source := range map[string]string{
+		"raylib/nested": "nested.c",
+		"tests":         "tests.c",
+	} {
+		contents := "all:\n\tcc -c " + source + "\n"
+		if err := os.WriteFile(filepath.Join(projectDir, directory, "Makefile"), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s Makefile failed: %v", directory, err)
+		}
+	}
+
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	wantDirectories := map[string]string{
+		"raylib.c": filepath.Join(projectDir, "raylib"),
+		"nested.c": filepath.Join(projectDir, "raylib", "nested"),
+		"root.c":   projectDir,
+		"tests.c":  filepath.Join(projectDir, "tests"),
+	}
+	if tool.StatusCode != 0 || len(commands) != len(wantDirectories) {
+		t.Fatalf("recursive Make discovery failed: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	for _, command := range commands {
+		want, ok := wantDirectories[command.File]
+		if !ok {
+			t.Fatalf("unexpected recursive command: %#v", command)
+		}
+		physical, err := filepath.EvalSymlinks(want)
+		if err != nil {
+			t.Fatalf("resolve %s directory failed: %v", command.File, err)
+		}
+		if command.Directory != trackedPathToSlash(physical) {
+			t.Fatalf("unexpected %s directory: want %q, got %q", command.File, physical, command.Directory)
+		}
+	}
+}
+
+func TestRecursiveMakeArgumentsForceDirectoryMarkers(t *testing.T) {
+	for name, test := range map[string]struct {
+		arguments []string
+		want      []string
+	}{
+		"remove full option": {
+			arguments: []string{"--no-print-directory", "-C", "child", "all"},
+			want:      []string{"--print-directory", "-C", "child", "all"},
+		},
+		"remove abbreviation": {
+			arguments: []string{"--no-print-dir", "all"},
+			want:      []string{"--print-directory", "all"},
+		},
+		"preserve assignment": {
+			arguments: []string{"VALUE=--no-print-directory", "all"},
+			want:      []string{"--print-directory", "VALUE=--no-print-directory", "all"},
+		},
+		"preserve invalid attached value": {
+			arguments: []string{"--no-print-directory=value", "all"},
+			want:      []string{"--print-directory", "--no-print-directory=value", "all"},
+		},
+		"preserve option operand": {
+			arguments: []string{"-f", "--no-print-directory", "all"},
+			want:      []string{"--print-directory", "-f", "--no-print-directory", "all"},
+		},
+		"preserve goal after terminator": {
+			arguments: []string{"--", "--no-print-directory"},
+			want:      []string{"--print-directory", "--", "--no-print-directory"},
+		},
+		"terminator used as operand": {
+			arguments: []string{"-f", "--", "all"},
+			want:      []string{"--print-directory", "-f", "--", "all"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := recursiveMakeArguments(test.arguments); !slices.Equal(got, test.want) {
+				t.Fatalf("unexpected recursive Make arguments: want %#v, got %#v", test.want, got)
+			}
+		})
+	}
+}
+
+func TestConfigureDiscoveryMakeProxy(t *testing.T) {
+	command := exec.Command("/tools/gmake", "all")
+	originalPath := command.Path
+	originalEnvironment := append([]string(nil), command.Env...)
+	cleanup, err := configureDiscoveryMakeProxy(command)
+	if err != nil {
+		t.Fatalf("configure Make proxy failed: %v", err)
+	}
+	proxyPath := command.Args[0]
+	if command.Path != originalPath {
+		t.Fatalf("proxy changed the selected Make executable: %q", command.Path)
+	}
+	if !shellSafeMakeProxyPath(proxyPath) || executableBase(proxyPath) != "make" ||
+		!strings.HasPrefix(filepath.Base(filepath.Dir(proxyPath)), makeProxyDirectoryPrefix) {
+		t.Fatalf("unexpected recursive Make proxy: %q", proxyPath)
+	}
+	proxyExecutable := proxyPath
+	metadata, err := os.ReadFile(filepath.Join(filepath.Dir(proxyExecutable), makeProxyMetadataName))
+	if err != nil || string(metadata) != originalPath {
+		t.Fatalf("unexpected recursive Make metadata: contents=%q err=%v", metadata, err)
+	}
+	if !slices.Equal(command.Env, originalEnvironment) {
+		t.Fatalf("proxy changed the Make environment: %#v", command.Env)
+	}
+	cleanup()
+	if _, err := os.Stat(filepath.Dir(proxyExecutable)); !os.IsNotExist(err) {
+		t.Fatalf("proxy directory was not removed: %v", err)
+	}
+}
+
+func TestCreateDiscoveryMakeProxyUsesAbsolutePath(t *testing.T) {
+	processDir := t.TempDir()
+	oldWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory failed: %v", err)
+	}
+	if err := os.Chdir(processDir); err != nil {
+		t.Fatalf("change working directory failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWorkingDir) })
+	if err := os.Mkdir("relative-tmp", 0o755); err != nil {
+		t.Fatalf("create relative temporary directory failed: %v", err)
+	}
+	t.Setenv("TMPDIR", "relative-tmp")
+
+	proxyPath, cleanup, err := createDiscoveryMakeProxy("/tools/gmake")
+	if runtime.GOOS == "windows" {
+		if err == nil {
+			cleanup()
+			t.Fatalf("relative temporary directory was accepted on Windows: %q", proxyPath)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("create Make proxy failed: %v", err)
+	}
+	defer cleanup()
+	if !filepath.IsAbs(proxyPath) {
+		t.Fatalf("Make proxy path is relative: %q", proxyPath)
+	}
+	if filepath.Clean(filepath.Dir(filepath.Dir(proxyPath))) != "/tmp" {
+		t.Fatalf("relative temporary directory did not fall back to /tmp: %q", proxyPath)
+	}
+}
+
+func TestMakeWrapProxyPreservesDefaultMakeOrigin(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	projectDir := t.TempDir()
+	makefile := `ifeq ($(origin MAKE),default)
+SOURCE = default.c
+else
+SOURCE = changed.c
+endif
+all:
+	cc -c $(SOURCE)
+`
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte(makefile), 0o644); err != nil {
+		t.Fatalf("write Makefile failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "default.c" {
+		t.Fatalf("proxy changed the default MAKE variable: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapProxyDoesNotLeakEnvironment(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	const proxyEnvironment = "COMPILEDB_INTERNAL_MAKE_PROXY"
+	oldValue, existed := os.LookupEnv(proxyEnvironment)
+	if err := os.Unsetenv(proxyEnvironment); err != nil {
+		t.Fatalf("unset proxy environment failed: %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(proxyEnvironment, oldValue)
+		} else {
+			_ = os.Unsetenv(proxyEnvironment)
+		}
+	})
+
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	if err := os.Mkdir(childDir, 0o755); err != nil {
+		t.Fatalf("create child directory failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) --no-print-directory -C child\n"), 0o644); err != nil {
+		t.Fatalf("write parent Makefile failed: %v", err)
+	}
+	childMakefile := `ifdef COMPILEDB_INTERNAL_MAKE_PROXY
+SOURCE = leaked.c
+else
+SOURCE = clean.c
+endif
+all:
+	cc -c $(SOURCE)
+`
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte(childMakefile), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "clean.c" {
+		t.Fatalf("proxy environment leaked into recursive Make: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapProxyPreservesRecursiveEnvironmentOverrides(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	grandchildDir := filepath.Join(projectDir, "grandchild")
+	for _, directory := range []string{childDir, grandchildDir} {
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			t.Fatalf("create directory failed: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) -e --no-print-directory -C child\n"), 0o644); err != nil {
+		t.Fatalf("write parent Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte("MAKE = /bin/false\nall:\n\t$(MAKE) -C ../grandchild\n"), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(grandchildDir, "Makefile"), []byte("all:\n\tcc -c should-not-run.c\n"), 0o644); err != nil {
+		t.Fatalf("write grandchild Makefile failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{BuildDir: projectDir, OutputFile: outputFile, NoBuild: true, NoStrict: true})
+	tool.MakeWrap(nil)
+	if tool.StatusCode == 0 {
+		t.Fatal("recursive -e no longer honored the child Makefile's MAKE value")
+	}
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Fatalf("failed discovery updated the database: %v", err)
+	}
+}
+
+func TestMakeWrapProxyPreservesExplicitMakeAssignment(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) recursive\n\nrecursive:\n\tcc -c should-not-run.c\n"), 0o644); err != nil {
+		t.Fatalf("write Makefile failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{BuildDir: projectDir, OutputFile: outputFile, NoBuild: true, NoStrict: true})
+	tool.MakeWrap([]string{"MAKE:=/bin/false"})
+	if tool.StatusCode == 0 {
+		t.Fatal("proxy overrode an explicit MAKE assignment")
+	}
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Fatalf("failed discovery updated the database: %v", err)
+	}
+}
+
+func TestMakeWrapProxyUsesSelectedMakeExecutableRecursively(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	if err := os.Mkdir(childDir, 0o755); err != nil {
+		t.Fatalf("create child directory failed: %v", err)
+	}
+	makeAlias := filepath.Join(projectDir, "g make'$")
+	if err := os.Symlink(makeExecutable, makeAlias); err != nil {
+		t.Skipf("create Make alias failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) --no-print-directory -C child\n"), 0o644); err != nil {
+		t.Fatalf("write parent Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte("all:\n\tcc -c custom.c\n"), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		MakeCommand:  makeAlias,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap(nil)
+	commands := readCompilerTestCommands(t, outputFile)
+	physicalChildDir, err := filepath.EvalSymlinks(childDir)
+	if err != nil {
+		t.Fatalf("resolve child directory failed: %v", err)
+	}
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "custom.c" ||
+		commands[0].Directory != trackedPathToSlash(physicalChildDir) {
+		t.Fatalf("selected Make was not proxied recursively: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+}
+
+func TestMakeWrapRemovesProxyAfterDiscoveryFailure(t *testing.T) {
+	makeExecutable, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("GNU Make is not available")
+	}
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) --no-print-directory missing-target\n"), 0o644); err != nil {
+		t.Fatalf("write Makefile failed: %v", err)
+	}
+	oldMakePath := makePath
+	makePath = makeExecutable
+	defer func() { makePath = oldMakePath }()
+
+	tool := newTestTool(t, Config{
+		BuildDir:   projectDir,
+		OutputFile: filepath.Join(t.TempDir(), "compile_commands.json"),
+		NoBuild:    true,
+		NoStrict:   true,
+	})
+	tool.MakeWrap(nil)
+	if tool.StatusCode == 0 {
+		t.Fatal("recursive Make failure was not propagated")
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("read temporary directory failed: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), makeProxyDirectoryPrefix) {
+			t.Fatalf("proxy directory was not removed: %q", entry.Name())
+		}
 	}
 }
 

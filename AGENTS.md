@@ -17,6 +17,7 @@
 - `compiledb make --cmd/-c COMMAND` selects the GNU Make-compatible executable for both real and discovery invocations. Before the first `--`, the subcommand consumes this option and `--help/-h` with the original Click short-cluster semantics; the first `--` is a wrapper delimiter and is not forwarded, while all following arguments are. Other Make arguments preserve their order and value outside recognized short-option clusters. Top-level `--command-style/-c` is parsed before `make` and remains a separate option.
 - Real Make failure takes precedence over dry-run failure. If the real build succeeds but the dry run fails, the dry-run status is returned. Under `--no-build`, dry-run failure is returned directly. A failed discovery never creates or updates the database, even when it produced partial stdout.
 - Discovery parsing consumes stdout only. Discovery stderr is forwarded to stderr as user-visible diagnostics and must never be parsed as compiler commands or written to JSON stdout.
+- Discovery-only recursive `$(MAKE)` calls use an internal proxy that removes child `--no-print-directory`, requests `--print-directory`, and delegates to the same resolved Make executable. The real build is never proxied. Explicit `MAKE` selection and `-e/--environment-overrides` retain user semantics. Hard-coded Make paths, wrappers that replace themselves with a hard-coded Make, Makefile `override MAKEFLAGS` that disables markers, and direct build-log parsing remain outside its scope.
 - Backtick expressions in build-log lines are executed by an embedded POSIX shell interpreter before command extraction. Do not feed untrusted logs to the parser. Preserve or explicitly test this behavior when changing parser flow.
 - Shell builtins in backtick expressions do not require an external shell executable. Programs explicitly invoked by the expression must still be available through `PATH`; execution failure emits a recoverable Error, skips only that command, and keeps status 0.
 - On Windows, the supported wrapper/parser combination is a GNU Make-compatible executable with POSIX/MSYS-style recipe output. `--cmd/-c` can select `gmake` or `mingw32-make`; native `cmd.exe` recipe grammar and `nmake` are out of scope.
@@ -44,7 +45,7 @@
 - Focus a test with `go test ./internal -run '^TestName$'` or `go test ./cmd/compiledb -run '^TestName$'`.
 - Build without leaving a repository artifact using `go build -o /tmp/compiledb-go ./cmd/compiledb`. The root `compiledb` binary is ignored, but `/tmp` is preferred for manual verification.
 - Do not treat `just` as a normal build check. `.justfile` requires Nushell, and its default `build` recipe runs the CLI against `tests/build.log`, generating `compile_commands.json` rather than only compiling the binary.
-- The release workflow gates Linux amd64 on gofmt, vet, tests, and race tests. Linux amd64/arm64, Windows amd64, and macOS arm64 artifacts are built natively and must run `--help` before publication. Local verification remains required.
+- The release workflow gates Linux amd64 on gofmt, vet, tests, and race tests. Windows amd64 also runs the native Make proxy path regression. Linux amd64/arm64, Windows amd64, and macOS arm64 artifacts are built natively and must run `--help` before publication. Local verification remains required.
 
 ## Test And Artifact Gotchas
 
