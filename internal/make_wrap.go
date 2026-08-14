@@ -363,6 +363,13 @@ func (t *Tool) MakeWrap(args []string) {
 
 	dryRunCmd := t.makeCommand(dryRunArgs...)
 	dryRunCmd.WaitDelay = makePipeWaitDelay
+	cleanupProxy, proxyErr := configureDiscoveryMakeProxy(dryRunCmd)
+	if proxyErr != nil {
+		t.StatusCode = 1
+		t.Logger.Errorf("configure recursive Make discovery failed: %v", proxyErr)
+		return
+	}
+	defer cleanupProxy()
 	dryRunCmd.Env = discoveryMakeEnvironment(dryRunCmd.Environ())
 	if usesStdin {
 		dryRunCmd.Stdin = bytes.NewReader(stdinData)

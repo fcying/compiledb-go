@@ -2407,6 +2407,7 @@ func TestMakeCommandDirectory(t *testing.T) {
 		"attached":          {line: "gmake -Csub", base: "/project", want: "/project/sub"},
 		"long":              {line: "mingw32-make --directory=sub", base: "/project", want: "/project/sub"},
 		"multiple":          {line: "make -C one --directory two", base: "/project", want: "/project/one/two"},
+		"current directory": {line: "make -C .", base: "/project", want: "/project"},
 		"UNC":               {line: "make -C sub", base: "//server/share/project", want: "//server/share/project/sub"},
 		"absolute resets":   {line: "make -C one -C /other", base: "/project", want: "/other"},
 		"option terminator": {line: "make -C one -- -C two", base: "/project", want: "/project/one"},
@@ -2445,6 +2446,26 @@ func TestMakeCommandDirectory(t *testing.T) {
 				t.Fatalf("unexpected make directory: want %q, got %q, ok=%v", test.want, got, ok)
 			}
 		})
+	}
+}
+
+func TestParseKeepsCurrentDirectoryForMakeDot(t *testing.T) {
+	projectDir := t.TempDir()
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{"make -C .", "gcc -c current.c"})
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "current.c" ||
+		commands[0].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("make -C . changed the tracked directory: %#v", commands)
 	}
 }
 
@@ -2873,6 +2894,44 @@ func TestParseConfirmsMakeCommandDirectoryFrame(t *testing.T) {
 	if len(commands) != 2 || commands[0].Directory != trackedPathToSlash(childDir) ||
 		commands[1].Directory != trackedPathToSlash(projectDir) {
 		t.Fatalf("make directory frame was duplicated: %#v", commands)
+	}
+}
+
+func TestParseTracksNestedMakeDirectoryMarkers(t *testing.T) {
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	grandchildDir := filepath.Join(childDir, "grandchild")
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+
+	tool.Parse([]string{
+		"make[1]: Entering directory '" + childDir + "'",
+		"gcc -c child-before.c",
+		"make[2]: Entering directory '" + grandchildDir + "'",
+		"gcc -c grandchild.c",
+		"make[2]: Leaving directory '" + grandchildDir + "'",
+		"gcc -c child-after.c",
+		"make[1]: Leaving directory '" + childDir + "'",
+		"gcc -c parent.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	wantFiles := []string{"child-before.c", "grandchild.c", "child-after.c", "parent.c"}
+	wantDirectories := []string{childDir, grandchildDir, childDir, projectDir}
+	if len(commands) != len(wantFiles) {
+		t.Fatalf("unexpected nested Make commands: %#v", commands)
+	}
+	for i := range commands {
+		if commands[i].File != wantFiles[i] || commands[i].Directory != trackedPathToSlash(wantDirectories[i]) {
+			t.Fatalf("nested Make directory %d was not tracked: %#v", i, commands)
+		}
 	}
 }
 
