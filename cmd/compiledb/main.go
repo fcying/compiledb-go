@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -16,9 +17,41 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.7.0"
+var Version = "v1.7.0"
 
 const encodingEnvVar = "COMPILEDB_ENCODING"
+
+func displayVersion() string {
+	var settings []debug.BuildSetting
+	if info, ok := debug.ReadBuildInfo(); ok {
+		settings = info.Settings
+	}
+	return formatVersion(Version, settings)
+}
+
+func formatVersion(version string, settings []debug.BuildSetting) string {
+	revision := ""
+	modified := false
+	for _, setting := range settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return version
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	if modified {
+		revision += "-dirty"
+	}
+	return fmt.Sprintf("%s (%s)", version, revision)
+}
 
 type compilerArguments []string
 
@@ -181,7 +214,7 @@ func execute(ctx *cli.Context, validateEncoding bool, fn ActionFunc) error {
 
 	if ctx.Bool("verbose") {
 		logger.SetLevel(log.DebugLevel)
-		logger.Info("compiledb-go start, version:", Version)
+		logger.Info("compiledb-go start, version:", displayVersion())
 	} else {
 		logger.SetLevel(log.ErrorLevel)
 	}
@@ -285,6 +318,7 @@ func parseMakeArguments(arguments []string) (string, []string, bool, error) {
 func newApp() *compiledbApp {
 	addArgs := compilerArguments{}
 	excludes := excludePatterns{}
+	version := displayVersion()
 
 	cli.AppHelpTemplate = `{{.HelpName}} {{.Version}}
 
@@ -304,7 +338,7 @@ COMMANDS:
 		Writer:                 os.Stdout,
 		ErrWriter:              os.Stderr,
 		OnUsageError:           showUsageError,
-		Version:                Version,
+		Version:                version,
 		UseShortOptionHandling: true,
 		HideHelpCommand:        true,
 		HideVersion:            true,
