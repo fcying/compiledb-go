@@ -16,7 +16,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var Version string = "v1.6.2"
+var Version string = "v1.7.0"
 
 const encodingEnvVar = "COMPILEDB_ENCODING"
 
