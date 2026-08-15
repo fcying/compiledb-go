@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +20,63 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
+
+func TestFormatVersion(t *testing.T) {
+	for name, test := range map[string]struct {
+		version  string
+		settings []debug.BuildSetting
+		want     string
+	}{
+		"build info revision": {
+			version:  "v1.7.0",
+			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "abcdef0123456789"}},
+			want:     "v1.7.0 (abcdef012345)",
+		},
+		"dirty build": {
+			version: "v1.7.0",
+			settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "abcdef0123456789"},
+				{Key: "vcs.modified", Value: "true"},
+			},
+			want: "v1.7.0 (abcdef012345-dirty)",
+		},
+		"no revision": {version: "v1.7.0", want: "v1.7.0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := formatVersion(test.version, test.settings); got != test.want {
+				t.Fatalf("unexpected version: want %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+func TestBuiltHelpIncludesCommit(t *testing.T) {
+	revisionOutput, err := exec.Command("git", "rev-parse", "--short=12", "HEAD").Output()
+	if err != nil {
+		t.Skipf("Git revision is unavailable: %v", err)
+	}
+	revision := strings.TrimSpace(string(revisionOutput))
+	if revision == "" {
+		t.Fatal("Git returned an empty revision")
+	}
+
+	executable := filepath.Join(t.TempDir(), "compiledb")
+	if runtime.GOOS == "windows" {
+		executable += ".exe"
+	}
+	build := exec.Command("go", "build", "-buildvcs=true", "-ldflags", "-X main.Version=integration-version", "-o", executable, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI failed: %v\n%s", err, output)
+	}
+	help, err := exec.Command(executable, "--help").Output()
+	if err != nil {
+		t.Fatalf("show built CLI help failed: %v", err)
+	}
+	want := "compiledb-go integration-version (" + revision
+	if !strings.HasPrefix(string(help), want) {
+		t.Fatalf("built help does not include commit: want prefix %q, got %q", want, help)
+	}
+}
 
 func init() {
 	log.SetOutput(os.Stdout)
@@ -955,7 +1014,8 @@ func TestHelpUsesStdout(t *testing.T) {
 	if err := app.Run([]string{"compiledb", "--help"}); err != nil {
 		t.Fatalf("show help failed: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "USAGE:") {
+	if !strings.HasPrefix(stdout.String(), "compiledb-go "+displayVersion()+"\n") ||
+		!strings.Contains(stdout.String(), "USAGE:") {
 		t.Fatalf("help was not written to stdout: %q", stdout.String())
 	}
 	if stderr.Len() != 0 {

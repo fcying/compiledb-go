@@ -27,12 +27,11 @@ jobs:
           release=false
           new_ver=$(grep -Po "v\d+\.\d+\.\d+" cmd/compiledb/main.go)
           cur_ver=$(git describe --abbrev=0 --tags)
-          commit=$(git rev-parse --short HEAD)
           if [[ "$new_ver" != "$cur_ver" && "$GITHUB_REF" == "refs/heads/main" ]]; then
             version=$new_ver
             release=true
           else
-            version="dev-${new_ver}(${commit})"
+            version="dev-${new_ver}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release=$release" >> "$GITHUB_OUTPUT"
