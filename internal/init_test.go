@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,66 @@ func TestGenerateFromStdinDoesNotPanic(t *testing.T) {
 	})
 
 	tool.Generate()
+}
+
+func TestScanBuildLogPhysicalLineLimit(t *testing.T) {
+	if reason := buildLogLineLimitReason(maxBuildLogLineSize); reason != "physical line exceeds 100 MiB limit" {
+		t.Fatalf("unexpected production line-limit diagnostic: %q", reason)
+	}
+
+	const limit = 8
+	for name, input := range map[string]string{
+		"LF":   strings.Repeat("x", limit) + "\n",
+		"CRLF": strings.Repeat("x", limit) + "\r\n",
+		"EOF":  strings.Repeat("x", limit),
+	} {
+		t.Run(name, func(t *testing.T) {
+			lines := scanBuildLogWithLimit([]byte(input), limit)
+			if len(lines) != 1 || lines[0].oversized || lines[0].text != strings.Repeat("x", limit) {
+				t.Fatalf("line at limit was not preserved: %#v", lines)
+			}
+		})
+	}
+
+	lines := scanBuildLogWithLimit([]byte(strings.Repeat("x", limit+1)+"\r\nok\n"), limit)
+	if len(lines) != 2 || !lines[0].oversized || lines[0].limit != limit || lines[0].text != "" ||
+		lines[1].oversized || lines[1].text != "ok" {
+		t.Fatalf("oversized line was not discarded cleanly: %#v", lines)
+	}
+}
+
+func TestGenerateSkipsOversizedPhysicalLine(t *testing.T) {
+	projectDir := t.TempDir()
+	buildLog := filepath.Join(projectDir, "build.log")
+	outputFile := filepath.Join(projectDir, "compile_commands.json")
+	contents := strings.Repeat("x", 32) + "\\\ncc -c joined.c\ncc -c valid.c\n"
+	if err := os.WriteFile(buildLog, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    buildLog,
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.buildLogLineLimit = 32
+	tool.Logger.SetLevel(log.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.Generate()
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("oversized build-log line stopped Generate: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	for _, want := range []string{"build log line 1", "cwd", "physical line exceeds 32 byte limit", "at byte 32"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("physical line diagnostic lacks %q: %q", want, diagnostic)
+		}
+	}
 }
 
 func TestGenerateResolvesResponseFileFromBuildLogDirectory(t *testing.T) {

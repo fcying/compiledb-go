@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -36,8 +37,17 @@ type parserPatterns struct {
 }
 
 type logicalLine struct {
-	text string
-	line int
+	text   string
+	line   int
+	issue  string
+	offset int
+}
+
+type buildLogLine struct {
+	text      string
+	raw       []byte
+	oversized bool
+	limit     int
 }
 
 type shellTokenizationError struct {
@@ -225,12 +235,7 @@ func shellLexicalError(line string) *shellTokenizationError {
 	return nil
 }
 
-type logicalLineIssue struct {
-	line   int
-	reason string
-}
-
-func lineContinuation(line string, initialQuote byte, initialWordStarted bool) (string, bool, byte, bool) {
+func lineContinuationState[T ~string | ~[]byte](line T, initialQuote byte, initialWordStarted bool) (bool, byte, bool) {
 	quote := initialQuote
 	escaped := false
 	wordStarted := initialWordStarted || initialQuote != 0
@@ -258,7 +263,7 @@ func lineContinuation(line string, initialQuote byte, initialWordStarted bool) (
 			continue
 		}
 		if character == '#' && !wordStarted {
-			return line, false, 0, false
+			return false, 0, false
 		}
 		if character == '\'' || character == '"' || character == '`' {
 			quote = character
@@ -273,35 +278,67 @@ func lineContinuation(line string, initialQuote byte, initialWordStarted bool) (
 		}
 	}
 	if escaped && quote != '\'' {
+		return true, quote, wordStarted
+	}
+	return false, 0, false
+}
+
+func lineContinuation(line string, initialQuote byte, initialWordStarted bool) (string, bool, byte, bool) {
+	continued, quote, wordStarted := lineContinuationState(line, initialQuote, initialWordStarted)
+	if continued {
 		return line[:len(line)-1], true, quote, wordStarted
 	}
 	return line, false, 0, false
 }
 
-func mergeLogicalLines(lines []string) ([]logicalLine, []logicalLineIssue) {
+func mergeLogicalLines(lines []buildLogLine) []logicalLine {
 	merged := make([]logicalLine, 0, len(lines))
-	issues := []logicalLineIssue{}
 	var builder strings.Builder
 	var quote byte
 	wordStarted := false
 	continuationStart := 0
+	discarding := false
 
 	for index, line := range lines {
-		line = strings.TrimSuffix(line, "\r")
-		if len(line) > maxBuildLogLineSize {
-			start := index + 1
-			if continuationStart != 0 {
-				start = continuationStart
+		if line.oversized {
+			var continued bool
+			var nextQuote byte
+			var nextWordStarted bool
+			if line.raw != nil {
+				continued, nextQuote, nextWordStarted = lineContinuationState(line.raw, quote, wordStarted)
+			} else {
+				continued, nextQuote, nextWordStarted = lineContinuationState(line.text, quote, wordStarted)
 			}
-			issues = append(issues, logicalLineIssue{line: start, reason: "physical line exceeds 100 MiB limit"})
+			merged = append(merged, logicalLine{
+				line:   index + 1,
+				issue:  buildLogLineLimitReason(line.limit),
+				offset: line.limit,
+			})
 			builder.Reset()
-			quote = 0
-			wordStarted = false
 			continuationStart = 0
+			discarding = continued
+			if continued {
+				quote = nextQuote
+				wordStarted = nextWordStarted
+			} else {
+				quote = 0
+				wordStarted = false
+			}
 			continue
 		}
 
-		content, continued, nextQuote, nextWordStarted := lineContinuation(line, quote, wordStarted)
+		content, continued, nextQuote, nextWordStarted := lineContinuation(line.text, quote, wordStarted)
+		if discarding {
+			discarding = continued
+			if continued {
+				quote = nextQuote
+				wordStarted = nextWordStarted
+			} else {
+				quote = 0
+				wordStarted = false
+			}
+			continue
+		}
 		if continued {
 			if continuationStart == 0 {
 				continuationStart = index + 1
@@ -327,10 +364,18 @@ func mergeLogicalLines(lines []string) ([]logicalLine, []logicalLineIssue) {
 	}
 
 	if continuationStart != 0 {
-		issues = append(issues, logicalLineIssue{line: continuationStart, reason: "unterminated line continuation"})
+		merged = append(merged, logicalLine{line: continuationStart, issue: "unterminated line continuation", offset: -1})
 	}
 
-	return merged, issues
+	return merged
+}
+
+func buildLogLineLimitReason(limit int) string {
+	const mebibyte = 1024 * 1024
+	if limit%mebibyte == 0 {
+		return fmt.Sprintf("physical line exceeds %d MiB limit", limit/mebibyte)
+	}
+	return fmt.Sprintf("physical line exceeds %d byte limit", limit)
 }
 
 func compilePatterns(cfg Config) (parserPatterns, error) {
@@ -1435,6 +1480,20 @@ func (t *Tool) processCompileCommand(command string, workingDir string, line int
 }
 
 func (t *Tool) Parse(buildLog []string) {
+	lines := make([]buildLogLine, 0, len(buildLog))
+	limit := t.physicalLineLimit()
+	for _, line := range buildLog {
+		line = strings.TrimSuffix(line, "\r")
+		if len(line) > limit {
+			lines = append(lines, buildLogLine{text: line, oversized: true, limit: limit})
+			continue
+		}
+		lines = append(lines, buildLogLine{text: line})
+	}
+	t.parseBuildLog(lines)
+}
+
+func (t *Tool) parseBuildLog(buildLog []buildLogLine) {
 	type directoryFrame struct {
 		path        string
 		provisional bool
@@ -1467,16 +1526,27 @@ func (t *Tool) Parse(buildLog []string) {
 	dirStack := []directoryFrame{{path: workingDir}}
 	virtualDirectories := make(map[string]struct{})
 
-	logicalLines, lineIssues := mergeLogicalLines(buildLog)
-	for _, issue := range lineIssues {
-		t.Logger.Errorf("skip build log line %d: %s", issue.line, issue.reason)
-	}
+	logicalLines := mergeLogicalLines(buildLog)
 	for _, logicalLine := range logicalLines {
 		line := logicalLine.text
 		lineNumber := logicalLine.line
 		if t.operationContext().Err() != nil {
 			t.StatusCode = contextExitCode(t.operationContext())
 			return
+		}
+		if logicalLine.issue != "" {
+			if logicalLine.offset >= 0 {
+				t.Logger.Errorf(
+					"skip build log line %d (cwd %q): %s at byte %d",
+					lineNumber,
+					workingDir,
+					logicalLine.issue,
+					logicalLine.offset,
+				)
+			} else {
+				t.Logger.Errorf("skip build log line %d: %s", lineNumber, logicalLine.issue)
+			}
+			continue
 		}
 		t.Logger.Debug("New command:", line)
 

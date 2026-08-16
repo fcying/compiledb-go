@@ -240,3 +240,46 @@ func TestExpandCompilerResponseFilesRejectsCLModeFromResponseFile(t *testing.T) 
 		t.Fatalf("CL mode from response file was accepted: arguments=%#v error=%v", result, err)
 	}
 }
+
+func TestExpandCompilerResponseFilesUsesOuterResponseQuoting(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "arguments.rsp"), []byte("--rsp-quoting=windows -c main.c"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	tool := newTestTool(t, Config{})
+
+	t.Run("final outer POSIX", func(t *testing.T) {
+		arguments := []string{"clang", "--rsp-quoting=windows", "--rsp-quoting=posix", "@arguments.rsp"}
+		result, err := tool.expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+		if err != nil {
+			t.Fatalf("final outer POSIX response quoting was rejected: %v", err)
+		}
+		want := []string{"clang", "--rsp-quoting=windows", "--rsp-quoting=posix", "--rsp-quoting=windows", "-c", "main.c"}
+		if !slices.Equal(result, want) {
+			t.Fatalf("unexpected expanded arguments:\nwant: %#v\ngot:  %#v", want, result)
+		}
+	})
+
+	t.Run("final outer Windows", func(t *testing.T) {
+		arguments := []string{"clang", "--rsp-quoting=posix", "--rsp-quoting=windows", "@arguments.rsp"}
+		result, err := tool.expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+		if err != nil {
+			t.Fatalf("opaque Windows response quoting returned an error: %v", err)
+		}
+		if !slices.Equal(result, arguments) {
+			t.Fatalf("Windows-quoted response file was expanded:\nwant: %#v\ngot:  %#v", arguments, result)
+		}
+	})
+
+	t.Run("response contents do not change tokenizer", func(t *testing.T) {
+		arguments := []string{"clang", "--rsp-quoting=posix", "@arguments.rsp"}
+		result, err := tool.expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+		if err != nil {
+			t.Fatalf("response-file option changed the outer tokenizer: %v", err)
+		}
+		want := []string{"clang", "--rsp-quoting=posix", "--rsp-quoting=windows", "-c", "main.c"}
+		if !slices.Equal(result, want) {
+			t.Fatalf("unexpected expanded arguments:\nwant: %#v\ngot:  %#v", want, result)
+		}
+	})
+}

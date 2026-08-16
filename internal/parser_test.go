@@ -130,6 +130,50 @@ func TestParsePreservesContinuationShellSemantics(t *testing.T) {
 	}
 }
 
+func TestParsePhysicalLineLimit(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	buildDir := t.TempDir()
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		InputFile:    "stdin",
+		OutputFile:   outputFile,
+		BuildDir:     buildDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.buildLogLineLimit = 32
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	atLimit := "cc -c at-limit.c"
+	atLimit += strings.Repeat(" ", tool.buildLogLineLimit-len(atLimit))
+
+	tool.Parse([]string{
+		atLimit,
+		"cc -DINTERRUPTED=1 \\",
+		strings.Repeat("x", 33),
+		"cc -c valid.c",
+		strings.Repeat("x", 32) + "\\",
+		"cc -c joined.c",
+		"cc -c after.c",
+	})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 3 || commands[0].File != "at-limit.c" ||
+		commands[1].File != "valid.c" || commands[2].File != "after.c" {
+		t.Fatalf("physical line limit stopped parsing: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	for _, want := range []string{"build log line 3", trackedPathToSlash(buildDir), "physical line exceeds 32 byte limit", "at byte 32"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("physical line diagnostic lacks %q: %q", want, diagnostic)
+		}
+	}
+	if strings.Contains(diagnostic, strings.Repeat("x", 16)) {
+		t.Fatalf("physical line diagnostic exposed line contents: %q", diagnostic)
+	}
+}
+
 func TestParseCommandStyleQuotesArguments(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputFile := filepath.Join(tmpDir, "compile_commands.json")

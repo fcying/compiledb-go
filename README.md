@@ -364,7 +364,8 @@ response files remain opaque.
 The parser applies fixed limits to individual physical lines and response-file
 expansion:
 
-- A physical build-log line is limited to 100 MiB.
+- A physical build-log line is limited to 100 MiB. An oversized line is
+  reported and skipped without stopping later lines from being parsed.
 - One response file is limited to 8 MiB.
 - Aggregate response-file input for one compiler command is limited to 32 MiB.
 - Response-file nesting is limited to 32 levels and 256 files.
@@ -372,31 +373,12 @@ expansion:
 - Expanded arguments and their copies across multi-source entries have a
   64 MiB budget.
 
-These are not whole-process resource limits. The total build-log size and the
-output produced by programs in backtick expressions do not have fixed limits;
-large inputs or unbounded command output can consume substantial memory.
-
 ## Related Projects
 
 - [nickdiego/compiledb][python-compiledb] is the Python project that originally
   inspired this Go rewrite.
 - [clangd][clangd] and [clang-tidy][clang-tidy] are common consumers of the
   generated `compile_commands.json` file.
-
-## Development
-
-Run the full local verification suite with:
-
-```sh
-test -z "$(gofmt -l .)"
-go vet ./...
-go test ./...
-go test -race ./...
-go build -o /tmp/compiledb-go ./cmd/compiledb
-```
-
-Some tests modify the current directory, standard streams, and process-global
-state, so those tests must not run in parallel.
 
 ## License
 
