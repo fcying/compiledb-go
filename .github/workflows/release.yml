@@ -75,6 +75,12 @@ jobs:
           mkdir -p dist
           go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb ./cmd/compiledb
           ./dist/compiledb --help
+          mkdir -p dist/smoke
+          printf 'int main(void) { return 0; }\n' > dist/smoke/main.c
+          printf 'cc -c main.c -o main.o\n' > dist/smoke/build.log
+          (cd dist/smoke && ../compiledb --parse build.log)
+          grep -F '"file": "main.c"' dist/smoke/compile_commands.json
+          rm -rf dist/smoke
           tar cJf dist/compiledb-linux-amd64.txz -C dist compiledb
 
       - uses: actions/upload-artifact@v4
@@ -100,6 +106,12 @@ jobs:
           mkdir -p dist
           go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb ./cmd/compiledb
           ./dist/compiledb --help
+          mkdir -p dist/smoke
+          printf 'int main(void) { return 0; }\n' > dist/smoke/main.c
+          printf 'cc -c main.c -o main.o\n' > dist/smoke/build.log
+          (cd dist/smoke && ../compiledb --parse build.log)
+          grep -F '"file": "main.c"' dist/smoke/compile_commands.json
+          rm -rf dist/smoke
           tar cJf dist/compiledb-linux-arm64.txz -C dist compiledb
 
       - uses: actions/upload-artifact@v4
@@ -128,6 +140,12 @@ jobs:
           mkdir -p dist
           go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb.exe ./cmd/compiledb
           ./dist/compiledb.exe --help
+          mkdir -p dist/smoke
+          printf 'int main(void) { return 0; }\n' > dist/smoke/main.c
+          printf 'cc -c main.c -o main.o\n' > dist/smoke/build.log
+          (cd dist/smoke && ../compiledb.exe --parse build.log)
+          grep -F '"file": "main.c"' dist/smoke/compile_commands.json
+          rm -rf dist/smoke
           (cd dist && 7z a compiledb-windows-amd64.zip compiledb.exe)
 
       - uses: actions/upload-artifact@v4
@@ -153,6 +171,12 @@ jobs:
           mkdir -p dist
           go build -ldflags "-X main.Version=$VERSION" -o dist/compiledb ./cmd/compiledb
           ./dist/compiledb --help
+          mkdir -p dist/smoke
+          printf 'int main(void) { return 0; }\n' > dist/smoke/main.c
+          printf 'cc -c main.c -o main.o\n' > dist/smoke/build.log
+          (cd dist/smoke && ../compiledb --parse build.log)
+          grep -F '"file": "main.c"' dist/smoke/compile_commands.json
+          rm -rf dist/smoke
           tar cJf dist/compiledb-darwin-arm64.txz -C dist compiledb
 
       - uses: actions/upload-artifact@v4

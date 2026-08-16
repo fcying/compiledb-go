@@ -43,6 +43,91 @@ func TestMakeWrapNoBuildStopsOnDryRunFailure(t *testing.T) {
 	}
 }
 
+func TestMakeWrapNoBuildDoesNotInvokeRealMake(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	invocationsFile := filepath.Join(tmpDir, "invocations")
+	realInvoked := filepath.Join(tmpDir, "real-invoked")
+	script := filepath.Join(tmpDir, "fake-make.sh")
+	contents := `#!/bin/sh
+printf '%s\n' "$*" >> ` + ShellJoinArgs([]string{invocationsFile}) + `
+case " $* " in
+  *" -Bnkw "*) echo 'cc -c no-build.c' ;;
+  *) : > ` + ShellJoinArgs([]string{realInvoked}) + ` ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+
+	oldMakePath := makePath
+	makePath = script
+	defer func() { makePath = oldMakePath }()
+
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.MakeWrap([]string{"target"})
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "no-build.c" {
+		t.Fatalf("no-build discovery failed: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	invocations, err := os.ReadFile(invocationsFile)
+	if err != nil {
+		t.Fatalf("read make invocations failed: %v", err)
+	}
+	if want := "target -Bnkw -j1 --print-directory\n"; string(invocations) != want {
+		t.Fatalf("expected exactly one discovery invocation %q, got %q", want, invocations)
+	}
+	if _, err := os.Stat(realInvoked); !os.IsNotExist(err) {
+		t.Fatalf("real Make was invoked with --no-build: %v", err)
+	}
+}
+
+func TestMakeWrapSkipsOversizedDiscoveryLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	script := filepath.Join(tmpDir, "fake-make.sh")
+	oversized := strings.Repeat("x", 32) + "\\"
+	contents := "#!/bin/sh\nprintf '%s\\n' " + ShellJoinArgs([]string{oversized, "cc -c joined.c", "cc -c valid.c"}) + "\n"
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake make failed: %v", err)
+	}
+
+	oldMakePath := makePath
+	makePath = script
+	defer func() { makePath = oldMakePath }()
+
+	var logs bytes.Buffer
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoBuild:      true,
+		NoStrict:     true,
+	})
+	tool.buildLogLineLimit = 32
+	tool.Logger.SetLevel(logrus.ErrorLevel)
+	tool.Logger.SetOutput(&logs)
+	tool.MakeWrap(nil)
+
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].File != "valid.c" {
+		t.Fatalf("oversized discovery line stopped MakeWrap: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	diagnostic := logs.String()
+	for _, want := range []string{"build log line 1", "cwd", "physical line exceeds 32 byte limit", "at byte 32"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("physical line diagnostic lacks %q: %q", want, diagnostic)
+		}
+	}
+}
+
 func TestMakeWrapDoesNotParseDiscoveryStderr(t *testing.T) {
 	tmpDir := t.TempDir()
 	script := filepath.Join(tmpDir, "fake-make.sh")

@@ -32,10 +32,7 @@ func BenchmarkBuildLogScan(b *testing.B) {
 			b.ResetTimer()
 
 			for range b.N {
-				lines, err := scanBuildLog(data)
-				if err != nil {
-					b.Fatal(err)
-				}
+				lines := scanBuildLog(data)
 				runtime.KeepAlive(lines)
 			}
 		})
@@ -47,10 +44,7 @@ func BenchmarkBuildLogMergeLogicalLines(b *testing.B) {
 	for _, size := range benchmarkBuildLogSizes {
 		b.Run(size.name, func(b *testing.B) {
 			data := buildLogBenchmarkData(size.size, chunk)
-			lines, err := scanBuildLog(data)
-			if err != nil {
-				b.Fatal(err)
-			}
+			lines := scanBuildLog(data)
 			data = nil
 			runtime.GC()
 
@@ -58,10 +52,7 @@ func BenchmarkBuildLogMergeLogicalLines(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				logicalLines, issues := mergeLogicalLines(lines)
-				if len(issues) != 0 {
-					b.Fatalf("unexpected logical line issues: %#v", issues)
-				}
+				logicalLines := mergeLogicalLines(lines)
 				runtime.KeepAlive(logicalLines)
 			}
 		})
@@ -127,11 +118,8 @@ func benchmarkDiscoveryOutput(b *testing.B, size int64, chunk []byte) {
 		if err := writeBuildLogBenchmarkData(&stdout, size, chunk); err != nil {
 			b.Fatal(err)
 		}
-		buildLog, err := scanBuildLog(stdout.Bytes())
-		if err != nil {
-			b.Fatal(err)
-		}
-		tool.Parse(buildLog)
+		buildLog := scanBuildLog(stdout.Bytes())
+		tool.parseBuildLog(buildLog)
 		if tool.StatusCode != 0 {
 			b.Fatalf("parser status: %d", tool.StatusCode)
 		}

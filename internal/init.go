@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -40,6 +39,7 @@ type Tool struct {
 	predefinedMacros       map[string][]string
 	compilerCommand        func(name string, arg ...string) *exec.Cmd
 	compilerCommandContext func(context.Context, string, ...string) *exec.Cmd
+	buildLogLineLimit      int
 	makeDirectoryMarkers   bool
 }
 
@@ -58,6 +58,13 @@ func (t *Tool) operationContext() context.Context {
 		return t.Context
 	}
 	return context.Background()
+}
+
+func (t *Tool) physicalLineLimit() int {
+	if t.buildLogLineLimit > 0 {
+		return t.buildLogLineLimit
+	}
+	return maxBuildLogLineSize
 }
 
 func (t *Tool) compilationDatabaseBuildDir() string {
@@ -368,23 +375,42 @@ func (t *Tool) Generate() {
 		t.Logger.Debugf("Build from stdin")
 	}
 
-	buildLog, err := scanBuildLog(data)
-	if err != nil {
-		t.Logger.Fatalf("read build log failed: %v", err)
-	}
 	if t.operationContext().Err() != nil {
 		t.StatusCode = contextExitCode(t.operationContext())
 		return
 	}
-	t.Parse(buildLog)
+	buildLog := scanBuildLogWithLimit(data, t.physicalLineLimit())
+	if t.operationContext().Err() != nil {
+		t.StatusCode = contextExitCode(t.operationContext())
+		return
+	}
+	t.parseBuildLog(buildLog)
 }
 
-func scanBuildLog(data []byte) ([]string, error) {
-	var lines []string
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 1024*1024), maxBuildLogLineSize)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+func scanBuildLog(data []byte) []buildLogLine {
+	return scanBuildLogWithLimit(data, maxBuildLogLineSize)
+}
+
+func scanBuildLogWithLimit(data []byte, limit int) []buildLogLine {
+	lineCount := bytes.Count(data, []byte{'\n'})
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		lineCount++
 	}
-	return lines, scanner.Err()
+	lines := make([]buildLogLine, 0, lineCount)
+	for len(data) > 0 {
+		line := data
+		if newline := bytes.IndexByte(data, '\n'); newline >= 0 {
+			line = data[:newline]
+			data = data[newline+1:]
+		} else {
+			data = nil
+		}
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(line) > limit {
+			lines = append(lines, buildLogLine{raw: line, oversized: true, limit: limit})
+			continue
+		}
+		lines = append(lines, buildLogLine{text: string(line)})
+	}
+	return lines
 }

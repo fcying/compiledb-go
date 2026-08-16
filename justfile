@@ -10,6 +10,10 @@ build:
     go run ./cmd/compiledb/main.go -v --full-path -p ./tests/build.log
 
 [script]
+test:
+    go test -count=1 ./...
+
+[script]
 release:
     go install ./cmd/compiledb
     GOOS=windows go install ./cmd/compiledb

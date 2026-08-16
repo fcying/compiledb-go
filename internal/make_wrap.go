@@ -290,18 +290,12 @@ func (t *Tool) runDiscoveryMake(cmd *exec.Cmd) discoveryResult {
 		return result
 	}
 
-	buildLog, scanErr := scanBuildLog(stdoutBuf.Bytes())
-	if scanErr != nil {
-		result.status = 1
-		t.Logger.Errorf("read dry-run output failed: %v", scanErr)
-		return result
-	}
 	clone := *t
 	clone.makeDirectoryMarkers = true
 	if !t.Config.NoBuild {
 		clone.Logger = loggerAtLevel(t.Logger, logrus.ErrorLevel)
 	}
-	clone.Parse(buildLog)
+	clone.parseBuildLog(scanBuildLogWithLimit(stdoutBuf.Bytes(), clone.physicalLineLimit()))
 	result.parserStatus = clone.StatusCode
 	return result
 }
