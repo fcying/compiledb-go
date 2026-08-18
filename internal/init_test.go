@@ -786,6 +786,19 @@ func TestWriteJSONFileEndsWithOneNewline(t *testing.T) {
 	}
 }
 
+func TestWriteJSONCreatesMissingParentDirectory(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "build", "nested", "compile_commands.json")
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-c", "main.c"}, File: "main.c"}}
+
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 1 || entries[0]["file"] != "main.c" {
+		t.Fatalf("unexpected entries: %#v", entries)
+	}
+}
+
 func TestWriteJSONStdoutReturnsCanceledStatusWhenBlocked(t *testing.T) {
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()

@@ -334,6 +334,10 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 	}
 	jsonData = append(jsonData, '\n')
 
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		t.Logger.Fatalf("create directory %v failed! err:%v", filepath.Dir(filename), err)
+	}
+
 	outfile, err := os.Create(filename)
 	if err != nil {
 		t.Logger.Fatalf("create %v failed! err:%v", filename, err)
