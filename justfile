@@ -14,6 +14,10 @@ test:
     go test -count=1 ./...
 
 [script]
+install:
+    go install ./cmd/compiledb
+
+[script]
 release:
     go install ./cmd/compiledb
     GOOS=windows go install ./cmd/compiledb
