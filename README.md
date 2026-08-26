@@ -1,3 +1,5 @@
+
+
 # compiledb-go
 
 `compiledb-go` generates a [Clang JSON Compilation Database][compdb], usually
@@ -166,9 +168,9 @@ compiledb make -C build all
 compiledb make -f core/main.mk CC=clang
 ```
 
-Use `make --cmd/-c` to select another GNU Make-compatible executable. This `-c`
-belongs to the `make` subcommand and is separate from the top-level
-`--command-style/-c` option:
+Use `make --cmd/-c` to select another GNU Make-compatible executable for both
+the real build and discovery. This `-c` belongs to the `make` subcommand and is
+separate from the top-level `--command-style/-c` option:
 
 ```sh
 compiledb make --cmd gmake -C build
