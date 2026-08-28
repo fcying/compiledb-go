@@ -122,6 +122,14 @@ func TestRelativeBuildDirIsStoredAsAbsolutePath(t *testing.T) {
 	if err := os.Mkdir(buildDir, 0o755); err != nil {
 		t.Fatalf("create build directory failed: %v", err)
 	}
+	physicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve temporary root failed: %v", err)
+	}
+	physicalBuildDir, err := filepath.EvalSymlinks(buildDir)
+	if err != nil {
+		t.Fatalf("resolve build directory failed: %v", err)
+	}
 	if err := os.Chdir(root); err != nil {
 		t.Fatalf("chdir failed: %v", err)
 	}
@@ -132,15 +140,15 @@ func TestRelativeBuildDirIsStoredAsAbsolutePath(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if cfg.BuildDir != buildDir {
-			t.Fatalf("unexpected build directory: want %q, got %q", buildDir, cfg.BuildDir)
+		if cfg.BuildDir != physicalBuildDir {
+			t.Fatalf("unexpected build directory: want %q, got %q", physicalBuildDir, cfg.BuildDir)
 		}
 		cwd, err := os.Getwd()
 		if err != nil {
 			t.Fatalf("getwd after createConfig failed: %v", err)
 		}
-		if cwd != root {
-			t.Fatalf("createConfig changed cwd: want %q, got %q", root, cwd)
+		if cwd != physicalRoot {
+			t.Fatalf("createConfig changed cwd: want %q, got %q", physicalRoot, cwd)
 		}
 		return nil
 	}
@@ -160,6 +168,10 @@ func TestRelativeBuildDirPreservesStrictLegacyEntry(t *testing.T) {
 	buildDir := filepath.Join(root, "build")
 	if err := os.Mkdir(buildDir, 0o755); err != nil {
 		t.Fatalf("create build directory failed: %v", err)
+	}
+	physicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve temporary root failed: %v", err)
 	}
 	for _, filename := range []string{"main.c", "empty.log"} {
 		if err := os.WriteFile(filepath.Join(buildDir, filename), nil, 0o644); err != nil {
@@ -199,7 +211,7 @@ func TestRelativeBuildDirPreservesStrictLegacyEntry(t *testing.T) {
 	if !ok || extension["keep"] != true {
 		t.Fatalf("legacy raw fields were not preserved: %#v", entries[0])
 	}
-	if cwd, err := os.Getwd(); err != nil || cwd != root {
+	if cwd, err := os.Getwd(); err != nil || cwd != physicalRoot {
 		t.Fatalf("CLI changed cwd: cwd=%q err=%v", cwd, err)
 	}
 }

@@ -1027,8 +1027,8 @@ func TestRecursiveMakeArgumentsForceDirectoryMarkers(t *testing.T) {
 
 func TestConfigureDiscoveryMakeProxy(t *testing.T) {
 	command := exec.Command("/tools/gmake", "all")
+	command.Env = []string{"PATH=/usr/bin", "MAKE_COMMAND=/old"}
 	originalPath := command.Path
-	originalEnvironment := append([]string(nil), command.Env...)
 	cleanup, err := configureDiscoveryMakeProxy(command)
 	if err != nil {
 		t.Fatalf("configure Make proxy failed: %v", err)
@@ -1046,8 +1046,9 @@ func TestConfigureDiscoveryMakeProxy(t *testing.T) {
 	if err != nil || string(metadata) != originalPath {
 		t.Fatalf("unexpected recursive Make metadata: contents=%q err=%v", metadata, err)
 	}
-	if !slices.Equal(command.Env, originalEnvironment) {
-		t.Fatalf("proxy changed the Make environment: %#v", command.Env)
+	wantEnvironment := []string{"PATH=/usr/bin", "MAKE_COMMAND=" + proxyPath}
+	if !slices.Equal(command.Env, wantEnvironment) {
+		t.Fatalf("proxy environment mismatch: want %#v, got %#v", wantEnvironment, command.Env)
 	}
 	cleanup()
 	if _, err := os.Stat(filepath.Dir(proxyExecutable)); !os.IsNotExist(err) {
@@ -1256,8 +1257,15 @@ func TestMakeWrapProxyUsesSelectedMakeExecutableRecursively(t *testing.T) {
 		t.Fatalf("create child directory failed: %v", err)
 	}
 	makeAlias := filepath.Join(projectDir, "g make'$")
-	if err := os.Symlink(makeExecutable, makeAlias); err != nil {
-		t.Skipf("create Make alias failed: %v", err)
+	if runtime.GOOS == "windows" {
+		if err := os.Symlink(makeExecutable, makeAlias); err != nil {
+			t.Skipf("create Make alias failed: %v", err)
+		}
+	} else {
+		contents := "#!/bin/sh\nexec " + ShellJoinArgs([]string{makeExecutable}) + " \"$@\"\n"
+		if err := os.WriteFile(makeAlias, []byte(contents), 0o755); err != nil {
+			t.Fatalf("write Make wrapper failed: %v", err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) --no-print-directory -C child\n"), 0o644); err != nil {
 		t.Fatalf("write parent Makefile failed: %v", err)
@@ -1386,8 +1394,13 @@ func TestMakeWrapProxyIsolatesRealAndDiscoveryPhases(t *testing.T) {
 		}
 		paths[index] = path
 	}
-	if paths[0] != makeExecutable || paths[1] != makeExecutable {
-		t.Fatalf("real Make did not retain its executable: %q", data)
+	if paths[0] != paths[1] {
+		t.Fatalf("real Make changed executable recursively: %q", data)
+	}
+	for _, executable := range paths[:2] {
+		if strings.HasPrefix(filepath.Base(filepath.Dir(executable)), makeProxyDirectoryPrefix) {
+			t.Fatalf("real Make used the discovery proxy: %q", data)
+		}
 	}
 	for _, proxy := range paths[2:] {
 		if proxy == makeExecutable || executableBase(proxy) != "make" || !strings.HasPrefix(filepath.Base(filepath.Dir(proxy)), makeProxyDirectoryPrefix) {

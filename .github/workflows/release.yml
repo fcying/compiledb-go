@@ -17,7 +17,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       release: ${{ steps.release.outputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -42,8 +42,8 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
 
@@ -91,7 +91,7 @@ jobs:
           rm -rf dist/smoke
           tar cJf dist/compiledb-linux-amd64.txz -C dist compiledb
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-linux-amd64
           path: dist/compiledb-linux-amd64.txz
@@ -103,8 +103,8 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
 
@@ -125,7 +125,7 @@ jobs:
           rm -rf dist/smoke
           tar cJf dist/compiledb-linux-arm64.txz -C dist compiledb
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-linux-arm64
           path: dist/compiledb-linux-arm64.txz
@@ -137,8 +137,8 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
 
@@ -160,7 +160,7 @@ jobs:
           rm -rf dist/smoke
           (cd dist && 7z a compiledb-windows-amd64.zip compiledb.exe)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-windows-amd64
           path: dist/compiledb-windows-amd64.zip
@@ -172,8 +172,8 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
 
@@ -194,7 +194,7 @@ jobs:
           rm -rf dist/smoke
           tar cJf dist/compiledb-darwin-arm64.txz -C dist compiledb
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-darwin-arm64
           path: dist/compiledb-darwin-arm64.txz
@@ -209,8 +209,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: release-*
           path: build

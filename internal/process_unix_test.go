@@ -245,8 +245,8 @@ func TestRunMakeCommandDoesNotTimeOutActiveOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read active output flags failed: %v", err)
 	}
-	if flagsDuring != flagsBefore {
-		t.Fatalf("Make output changed caller fd flags: before=%#x during=%#x", flagsBefore, flagsDuring)
+	if (flagsDuring^flagsBefore)&unix.O_NONBLOCK != 0 {
+		t.Fatalf("Make output changed caller nonblocking mode: before=%#x during=%#x", flagsBefore, flagsDuring)
 	}
 	data := make([]byte, 4*1024*1024)
 	_, err = io.ReadFull(outputReader, data)

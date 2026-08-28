@@ -415,14 +415,12 @@ func TestRealCompilerMacroAffectingOptionsAreReplayed(t *testing.T) {
 		}
 	}
 
-	withoutPIC := tool.getPredefinedMacros([]string{compiler, "-fPIC", "-fno-pic", "-c", "main.c"}, "main.c", workingDir)
-	if len(withoutPIC) == 0 {
-		t.Fatal("-fno-pic probe returned no predefined macros")
+	withoutFastMath := tool.getPredefinedMacros([]string{compiler, "-ffast-math", "-fno-fast-math", "-c", "main.c"}, "main.c", workingDir)
+	if len(withoutFastMath) == 0 {
+		t.Fatal("-fno-fast-math probe returned no predefined macros")
 	}
-	for _, macro := range withoutPIC {
-		if macro == "-D__PIC__=1" || macro == "-D__PIC__=2" || macro == "-D__PIE__=1" || macro == "-D__PIE__=2" {
-			t.Fatalf("-fno-pic probe retained a stale position-independent macro: %s", macro)
-		}
+	if slices.Contains(withoutFastMath, "-D__FAST_MATH__=1") {
+		t.Fatal("-fno-fast-math probe retained the stale __FAST_MATH__ macro")
 	}
 
 	if runtime.GOARCH == "386" || runtime.GOARCH == "amd64" {

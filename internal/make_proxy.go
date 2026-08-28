@@ -66,6 +66,18 @@ func recursiveMakeArguments(arguments []string) []string {
 	return result
 }
 
+func discoveryMakeProxyEnvironment(environment []string, proxyPath string) []string {
+	result := make([]string, 0, len(environment)+1)
+	for _, variable := range environment {
+		name, _, _ := strings.Cut(variable, "=")
+		if name == "MAKE_COMMAND" || (runtime.GOOS == "windows" && strings.EqualFold(name, "MAKE_COMMAND")) {
+			continue
+		}
+		result = append(result, variable)
+	}
+	return append(result, "MAKE_COMMAND="+proxyPath)
+}
+
 func configureDiscoveryMakeProxy(command *exec.Cmd) (func(), error) {
 	if command.Err != nil {
 		return func() {}, nil
@@ -83,6 +95,7 @@ func configureDiscoveryMakeProxy(command *exec.Cmd) (func(), error) {
 		return nil, err
 	}
 	command.Args[0] = proxyPath
+	command.Env = discoveryMakeProxyEnvironment(command.Environ(), proxyPath)
 	return cleanup, nil
 }
 
