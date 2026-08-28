@@ -1214,6 +1214,131 @@ func TestParseLeavesUnsupportedResponseFileModesOpaque(t *testing.T) {
 	}
 }
 
+func TestParseBackticksTrackMakeAndGeneratedDirectories(t *testing.T) {
+	t.Run("make directory", func(t *testing.T) {
+		projectDir := t.TempDir()
+		childDir := filepath.Join(projectDir, "sub")
+		if err := os.Mkdir(childDir, 0o755); err != nil {
+			t.Fatalf("create child directory failed: %v", err)
+		}
+		outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+		tool := newTestTool(t, Config{OutputFile: outputFile, BuildDir: projectDir, RegexCompile: RegexCompile, RegexFile: RegexFile, NoStrict: true})
+		tool.Parse([]string{"make -C `printf sub`", "cc -c child.c"})
+		commands := readCompilerTestCommands(t, outputFile)
+		if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(childDir) {
+			t.Fatalf("backtick Make directory tracking failed: %#v", commands)
+		}
+	})
+
+	t.Run("generated directory", func(t *testing.T) {
+		projectDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(projectDir, "main.c"), []byte("int main;\n"), 0o644); err != nil {
+			t.Fatalf("write source file failed: %v", err)
+		}
+		outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+		tool := newTestTool(t, Config{OutputFile: outputFile, BuildDir: projectDir, RegexCompile: RegexCompile, RegexFile: RegexFile})
+		tool.makeDirectoryMarkers = true
+		tool.Parse([]string{"mkdir -p `printf generated`", "cd generated && cc -c " + ShellJoinArgs([]string{filepath.Join(projectDir, "main.c")})})
+		commands := readCompilerTestCommands(t, outputFile)
+		if len(commands) != 1 || commands[0].Directory != trackedPathToSlash(filepath.Join(projectDir, "generated")) {
+			t.Fatalf("backtick generated directory tracking failed: %#v", commands)
+		}
+	})
+}
+
+func TestParseBacktickFailureDoesNotChangeDirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	var logs bytes.Buffer
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		BuildDir:     projectDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Logger.SetOutput(&logs)
+	t.Setenv("PATH", t.TempDir())
+	tool.Parse([]string{
+		"make -C `compiledb-missing-backtick-executable`",
+		"cc -c valid.c",
+	})
+	commands := readCompilerTestCommands(t, outputFile)
+	if tool.StatusCode != 0 || len(commands) != 1 || commands[0].Directory != trackedPathToSlash(projectDir) {
+		t.Fatalf("backtick failure changed parser state: status=%d commands=%#v", tool.StatusCode, commands)
+	}
+	if !strings.Contains(logs.String(), "Error executing nested command") {
+		t.Fatalf("missing backtick failure diagnostic: %q", logs.String())
+	}
+}
+
+func TestParseRecognizesDefaultSourceSuffixes(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	files := []string{"one.c", "two.C", "three.cc", "four.cpp", "five.cxx", "six.c++", "seven.s", "eight.S", "nine.m", "ten.mm", "eleven.cu", "unknown.xyz"}
+	lines := make([]string, 0, len(files)+1)
+	for _, filename := range files {
+		lines = append(lines, "cc -c "+filename)
+	}
+	lines = append(lines, "cc -x c -c extensionless")
+	tool.Parse(lines)
+	commands := readCompilerTestCommands(t, outputFile)
+	want := append(files[:len(files)-1], "extensionless")
+	if len(commands) != len(want) {
+		t.Fatalf("unexpected source detection result: %#v", commands)
+	}
+	for index, filename := range want {
+		if commands[index].File != filename {
+			t.Fatalf("source suffix %q generated %#v", filename, commands[index])
+		}
+	}
+}
+
+func TestParseCustomFileRegexDoesNotScanResponseContents(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "arguments.rsp"), []byte("generated.custom"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		BuildDir:     workingDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    `(?P<file>[^ ]+\.custom)`,
+		NoStrict:     true,
+	})
+	tool.Parse([]string{"cc @arguments.rsp", "cc direct.custom"})
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "direct.custom" {
+		t.Fatalf("custom regex scanned response file contents: %#v", commands)
+	}
+}
+
+func TestParseResponseFilePreservesUTF8InJSON(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "arguments.rsp"), []byte("-D名称=值 -c 源码.c"), 0o644); err != nil {
+		t.Fatalf("write UTF-8 response file failed: %v", err)
+	}
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	tool := newTestTool(t, Config{
+		OutputFile:   outputFile,
+		BuildDir:     workingDir,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		NoStrict:     true,
+	})
+	tool.Parse([]string{"cc @arguments.rsp"})
+	commands := readCompilerTestCommands(t, outputFile)
+	if len(commands) != 1 || commands[0].File != "源码.c" || !slices.Contains(commands[0].Arguments, "-D名称=值") {
+		t.Fatalf("UTF-8 response arguments changed before JSON output: %#v", commands)
+	}
+}
+
 func TestRestoreWindowsResponseFileArguments(t *testing.T) {
 	for name, test := range map[string]struct {
 		command string

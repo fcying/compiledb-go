@@ -13,6 +13,10 @@ import (
 
 const processKillDelay = time.Second
 
+var signalProcessGroup = func(pgid int, signal syscall.Signal) error {
+	return syscall.Kill(-pgid, signal)
+}
+
 func configureProcessCommand(cmd *exec.Cmd, ctx context.Context) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -38,7 +42,7 @@ func cleanupExitedProcessTree(process *os.Process) error {
 	if process == nil {
 		return os.ErrProcessDone
 	}
-	err := syscall.Kill(-process.Pid, syscall.SIGKILL)
+	err := signalProcessGroup(process.Pid, syscall.SIGKILL)
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}
@@ -55,8 +59,7 @@ func terminateProcessTree(process *os.Process, ctx context.Context) error {
 			signal = received
 		}
 	}
-	processGroup := -process.Pid
-	err := syscall.Kill(processGroup, signal)
+	err := signalProcessGroup(process.Pid, signal)
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}
@@ -65,12 +68,12 @@ func terminateProcessTree(process *os.Process, ctx context.Context) error {
 	}
 	deadline := time.Now().Add(processKillDelay)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(processGroup, 0); errors.Is(err, syscall.ESRCH) {
+		if err := signalProcessGroup(process.Pid, 0); errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := syscall.Kill(processGroup, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalProcessGroup(process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	return nil

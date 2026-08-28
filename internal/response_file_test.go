@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -132,14 +133,22 @@ func TestExpandCompilerResponseFilesRejectsInvalidFiles(t *testing.T) {
 func TestExpandCompilerResponseFilesEnforcesLimits(t *testing.T) {
 	t.Run("depth", func(t *testing.T) {
 		workingDir := t.TempDir()
-		for i := 0; i <= maxResponseFileDepth; i++ {
-			contents := "-c main.c"
-			if i < maxResponseFileDepth {
-				contents = "@" + filepath.Base(filepath.Join(workingDir, responseTestFilename(i+1)))
+		for index := range maxResponseFileDepth {
+			contents := "x"
+			if index+1 < maxResponseFileDepth {
+				contents = "@" + responseTestFilename(index+1)
 			}
-			if err := os.WriteFile(filepath.Join(workingDir, responseTestFilename(i)), []byte(contents), 0o644); err != nil {
-				t.Fatalf("write response file %d failed: %v", i, err)
+			if err := os.WriteFile(filepath.Join(workingDir, responseTestFilename(index)), []byte(contents), 0o644); err != nil {
+				t.Fatalf("write response file %d failed: %v", index, err)
 			}
+		}
+		arguments := []string{"gcc", "@" + responseTestFilename(0)}
+		expanded, err := newTestTool(t, Config{}).expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+		if err != nil || !slices.Equal(expanded, []string{"gcc", "x"}) {
+			t.Fatalf("depth limit rejected exact recursive boundary: arguments=%#v error=%v", expanded, err)
+		}
+		if err := os.WriteFile(filepath.Join(workingDir, responseTestFilename(maxResponseFileDepth-1)), []byte("@unopened.rsp"), 0o644); err != nil {
+			t.Fatalf("write over-limit response file failed: %v", err)
 		}
 		assertResponseExpansionError(t, workingDir, "@"+responseTestFilename(0), "depth limit")
 	})
@@ -282,4 +291,127 @@ func TestExpandCompilerResponseFilesUsesOuterResponseQuoting(t *testing.T) {
 			t.Fatalf("unexpected expanded arguments:\nwant: %#v\ngot:  %#v", want, result)
 		}
 	})
+}
+
+func TestExpandCompilerResponseFilesEnforcesFileAndAggregateBoundaries(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "one-byte.rsp"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file-count boundary response file failed: %v", err)
+	}
+	expansion := responseFileExpansion{
+		tool:       newTestTool(t, Config{}),
+		workingDir: workingDir,
+		fileCount:  maxResponseFiles - 1,
+	}
+	result := []string{"gcc"}
+	if err := expansion.expandFile(&result, "one-byte.rsp", 1); err != nil || !slices.Equal(result, []string{"gcc", "x"}) {
+		t.Fatalf("file limit rejected exact boundary: arguments=%#v error=%v", result, err)
+	}
+	if expansion.fileCount != maxResponseFiles {
+		t.Fatalf("successful expansion did not consume file budget: %d", expansion.fileCount)
+	}
+	if err := expansion.expandFile(&result, "one-byte.rsp", 1); err == nil || !strings.Contains(err.Error(), "file limit") {
+		t.Fatalf("file limit accepted one extra file: error=%v", err)
+	}
+	for _, total := range []int64{maxResponseFileBytes - 1, maxResponseFileBytes} {
+		t.Run(fmt.Sprintf("aggregate bytes %d", total), func(t *testing.T) {
+			expansion := responseFileExpansion{
+				tool:       newTestTool(t, Config{}),
+				workingDir: workingDir,
+				totalBytes: total,
+			}
+			result := []string{"gcc"}
+			err := expansion.expandFile(&result, "one-byte.rsp", 1)
+			if total == maxResponseFileBytes-1 {
+				if err != nil || !slices.Equal(result, []string{"gcc", "x"}) {
+					t.Fatalf("aggregate limit rejected exact boundary: arguments=%#v error=%v", result, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "total size limit") {
+				t.Fatalf("aggregate limit accepted one extra byte: error=%v", err)
+			}
+		})
+	}
+
+	for _, output := range []int64{maxResponseFileOutput - 2, maxResponseFileOutput - 1} {
+		t.Run(fmt.Sprintf("output bytes %d", output), func(t *testing.T) {
+			expansion := responseFileExpansion{outputBytes: output}
+			result := []string{}
+			err := expansion.appendArgument(&result, "x", "")
+			if output == maxResponseFileOutput-2 {
+				if err != nil || !slices.Equal(result, []string{"x"}) {
+					t.Fatalf("output limit rejected exact boundary: arguments=%#v error=%v", result, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "output limit") {
+				t.Fatalf("output limit accepted one extra byte: error=%v", err)
+			}
+		})
+	}
+}
+
+func TestResponseExpansionCountsPriorArguments(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "one.rsp"), []byte("-DONE=1"), 0o644); err != nil {
+		t.Fatalf("write response file failed: %v", err)
+	}
+	for _, count := range []int{maxResponseFileArguments - 1, maxResponseFileArguments} {
+		t.Run(fmt.Sprintf("prior arguments %d", count), func(t *testing.T) {
+			arguments := make([]string, count+1)
+			arguments[0] = "gcc"
+			for index := 1; index < count; index++ {
+				arguments[index] = "-DPRIOR=1"
+			}
+			arguments[count] = "@one.rsp"
+			expanded, err := newTestTool(t, Config{}).expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+			if count == maxResponseFileArguments-1 {
+				if err != nil || len(expanded) != maxResponseFileArguments || expanded[len(expanded)-1] != "-DONE=1" {
+					t.Fatalf("prior argv budget rejected exact boundary: count=%d error=%v", len(expanded), err)
+				}
+				return
+			}
+			if err == nil || expanded != nil || !strings.Contains(err.Error(), "argument limit") {
+				t.Fatalf("prior argv budget accepted response argument: count=%d error=%v", len(expanded), err)
+			}
+		})
+	}
+}
+
+func TestExpandCompilerResponseFilesDetectsFileIdentityRecursion(t *testing.T) {
+	for name, link := range map[string]func(string, string) error{
+		"hardlink": os.Link,
+		"symlink":  os.Symlink,
+	} {
+		t.Run(name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			original := filepath.Join(workingDir, "original.rsp")
+			contents := strings.Repeat("x ", maxResponseFileArguments/2+1) + "@alias.rsp"
+			if err := os.WriteFile(original, []byte(contents), 0o644); err != nil {
+				t.Fatalf("write response file failed: %v", err)
+			}
+			alias := filepath.Join(workingDir, "alias.rsp")
+			if err := link(original, alias); err != nil {
+				t.Skipf("%s is unavailable: %v", name, err)
+			}
+			arguments := []string{"gcc", "@original.rsp"}
+			expanded, err := newTestTool(t, Config{}).expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+			if err == nil || expanded != nil || !strings.Contains(err.Error(), "recursive expansion") {
+				t.Fatalf("%s identity recursion was not rejected: arguments=%#v error=%v", name, expanded, err)
+			}
+		})
+	}
+}
+
+func TestExpandCompilerResponseFilesPreservesUTF8(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "arguments.rsp"), []byte("-D名称=值 -c 源码.c"), 0o644); err != nil {
+		t.Fatalf("write UTF-8 response file failed: %v", err)
+	}
+	arguments := []string{"gcc", "@arguments.rsp"}
+	expanded, err := newTestTool(t, Config{}).expandCompilerResponseFiles(arguments, parseCompilerInvocation(arguments), workingDir)
+	if err != nil || !slices.Equal(expanded, []string{"gcc", "-D名称=值", "-c", "源码.c"}) {
+		t.Fatalf("UTF-8 response expansion changed bytes: arguments=%#v error=%v", expanded, err)
+	}
 }

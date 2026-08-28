@@ -60,6 +60,14 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+
+      - name: Check Make and compiler prerequisites
+        run: |
+          command -v make
+          make --version | grep -F 'GNU Make'
+          command -v cc
+          printf 'int main(void) { return 0; }\n' | cc -x c -c -o /tmp/compiledb-ci-compiler.o -
+          rm -f /tmp/compiledb-ci-compiler.o
       - name: Vet
         run: go vet ./...
 
@@ -100,6 +108,9 @@ jobs:
         with:
           go-version: stable
 
+      - name: Test
+        run: go test -count=1 ./...
+
       - name: Build and smoke test
         run: |
           test "$(go env GOOS)/$(go env GOARCH)" = "linux/arm64"
@@ -131,8 +142,9 @@ jobs:
         with:
           go-version: stable
 
-      - name: Test Make proxy paths
-        run: go test ./internal -run '^TestMakeProxy' -count=1
+
+      - name: Test Make proxy and process paths
+        run: go test ./internal -run '^(TestMakeProxy.*|TestProcessWindows(CancelsJobTree|StartFailureDoesNotRetainJob|StopStartedProcessWaitsAfterKillError|AssignmentFailureFallsBackToLeader|ResumeFailureCleansState|ResumeTerminationFailureFallsBackToLeader|CancelsOutputProcesses))$' -count=1
 
       - name: Build and smoke test
         run: |
@@ -164,6 +176,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+
+      - name: Test
+        run: go test -count=1 ./...
 
       - name: Build and smoke test
         run: |

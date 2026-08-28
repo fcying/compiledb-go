@@ -435,6 +435,221 @@ func TestMakeWrapNoBuildTerminatesDryRunBackgroundProcesses(t *testing.T) {
 	}
 }
 
+func TestMakeWrapCancelsActiveMakePhases(t *testing.T) {
+	for name, test := range map[string]struct {
+		noBuild       bool
+		wantDiscovery bool
+		wantDatabase  bool
+	}{
+		"real build": {noBuild: false, wantDiscovery: false, wantDatabase: false},
+		"discovery":  {noBuild: true, wantDiscovery: true, wantDatabase: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			started := filepath.Join(tmpDir, "started-$'`")
+			pidFile := filepath.Join(tmpDir, "child-$'`.pid")
+			discovery := filepath.Join(tmpDir, "discovery-$'`")
+			script := filepath.Join(tmpDir, "fake-make.sh")
+			helper := "COMPILEDB_TEST_PROCESS_MODE=sleep " + ShellJoinArgs([]string{os.Args[0], "-test.run=^TestProcessUnixHelperProcess$"})
+			discoveryArg := ShellJoinArgs([]string{discovery})
+			pidArg := ShellJoinArgs([]string{pidFile})
+			startedArg := ShellJoinArgs([]string{started})
+			contents := `#!/bin/sh
+case " $* " in
+  *" -Bnkw "*) touch ` + discoveryArg + `; ` + helper + ` &
+    echo $! > ` + pidArg + `; touch ` + startedArg + `; wait ;;
+  *) ` + helper + ` &
+    echo $! > ` + pidArg + `; touch ` + startedArg + `; wait ;;
+esac
+`
+			if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+				t.Fatalf("write fake Make failed: %v", err)
+			}
+			oldMakePath := makePath
+			makePath = script
+			t.Cleanup(func() { makePath = oldMakePath })
+			ctx, cancel := context.WithCancelCause(context.Background())
+			tool := newTestTool(t, Config{OutputFile: filepath.Join(tmpDir, "compile_commands.json"), NoBuild: test.noBuild, NoStrict: true, Encoding: EncodingRaw})
+			tool.Context = ctx
+			done := make(chan struct{})
+			go func() { tool.MakeWrap(nil); close(done) }()
+			pid, markProcessExited := trackMakeWrapCancellationFixture(t, pidFile, done, cancel)
+			waitForTestFile(t, started)
+			cancel(SignalError{ProcessSignal: syscall.SIGTERM})
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("MakeWrap did not return after cancellation")
+			}
+			if tool.StatusCode != 128+int(syscall.SIGTERM) {
+				t.Fatalf("unexpected cancellation status: %d", tool.StatusCode)
+			}
+			if _, err := os.Stat(discovery); (err == nil) != test.wantDiscovery {
+				t.Fatalf("unexpected discovery phase state: %v", err)
+			}
+			if _, err := os.Stat(tool.Config.OutputFile); (err == nil) != test.wantDatabase {
+				t.Fatalf("unexpected database state: %v", err)
+			}
+			assertTestProcessPIDExited(t, pid)
+			markProcessExited()
+		})
+	}
+}
+
+func TestMakeWrapCancelsRecursiveDiscoveryProxy(t *testing.T) {
+	makeExecutable := requireGNUmake(t)
+	for _, name := range []string{"MAKE", "MAKE_COMMAND", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKELEVEL", "MFLAGS", "MAKEOVERRIDES"} {
+		value, exists := os.LookupEnv(name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s failed: %v", name, err)
+		}
+		t.Cleanup(func() {
+			if exists {
+				_ = os.Setenv(name, value)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		})
+	}
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	childDir := filepath.Join(projectDir, "child")
+	if err := os.MkdirAll(childDir, 0o755); err != nil {
+		t.Fatalf("create recursive Make project failed: %v", err)
+	}
+	started := filepath.Join(tmpDir, "started-$")
+	pidFile := filepath.Join(tmpDir, "child-$.pid")
+	proxyRecord := filepath.Join(tmpDir, "proxy-path-$")
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t$(MAKE) --no-print-directory -C child\n"), 0o644); err != nil {
+		t.Fatalf("write root Makefile failed: %v", err)
+	}
+	startedArg := strings.ReplaceAll(ShellJoinArgs([]string{started}), "$", "$$")
+	pidArg := strings.ReplaceAll(ShellJoinArgs([]string{pidFile}), "$", "$$")
+	proxyArg := strings.ReplaceAll(ShellJoinArgs([]string{proxyRecord}), "$", "$$")
+	childMakefile := "all:\n\tprintf '%s\\n' \"$(MAKE)\" > " + proxyArg + "; $(MAKE) --version >/dev/null; sleep 30 & echo $$! > " + pidArg + "; touch " + startedArg + "; wait\n"
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte(childMakefile), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+	t.Setenv("TMPDIR", tmpDir)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   filepath.Join(tmpDir, "compile_commands.json"),
+		MakeCommand:  makeExecutable,
+		NoBuild:      true,
+		NoStrict:     true,
+		Encoding:     EncodingRaw,
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+	})
+	tool.Context = ctx
+	done := make(chan struct{})
+	go func() { tool.MakeWrap(nil); close(done) }()
+	pid, markProcessExited := trackMakeWrapCancellationFixture(t, pidFile, done, cancel)
+	waitForTestFile(t, started)
+	proxyData, err := os.ReadFile(proxyRecord)
+	if err != nil {
+		t.Fatalf("read recursive Make proxy path failed: %v", err)
+	}
+	proxyPath := strings.TrimSpace(string(proxyData))
+	if proxyPath == makeExecutable || filepath.Base(proxyPath) != "make" || !strings.HasPrefix(filepath.Base(filepath.Dir(proxyPath)), makeProxyDirectoryPrefix) {
+		t.Fatalf("recursive Make bypassed discovery proxy: %q", proxyPath)
+	}
+	cancel(SignalError{ProcessSignal: syscall.SIGTERM})
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recursive discovery did not return after cancellation")
+	}
+	if tool.StatusCode != 128+int(syscall.SIGTERM) {
+		t.Fatalf("unexpected recursive discovery cancellation status: %d", tool.StatusCode)
+	}
+	if _, err := os.Stat(tool.Config.OutputFile); !os.IsNotExist(err) {
+		t.Fatalf("canceled recursive discovery wrote a database: %v", err)
+	}
+	assertTestProcessPIDExited(t, pid)
+	markProcessExited()
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read proxy temporary directory failed: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), makeProxyDirectoryPrefix) {
+			t.Fatalf("recursive discovery left proxy directory %q", entry.Name())
+		}
+	}
+}
+
+func TestWatchExitedProcessTreeStopsBeforeLaterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := processUnixHelperCommand(ctx, "sleep")
+	configureMakeCommand(cmd, ctx)
+	if err := startProcessCommand(cmd); err != nil {
+		t.Fatalf("start process failed: %v", err)
+	}
+	stopWatching := watchExitedProcessTree(ctx, cmd.Process)
+	watcherCleaned := false
+	t.Cleanup(func() {
+		if watcherCleaned {
+			return
+		}
+		cancel()
+		stopWatching()
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("stop process failed: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("stopped process returned nil wait error")
+	}
+	stopWatching()
+	watcherCleaned = true
+
+	originalSignal := signalProcessGroup
+	signals := make(chan syscall.Signal, 1)
+	signalProcessGroup = func(_ int, signal syscall.Signal) error {
+		select {
+		case signals <- signal:
+		default:
+		}
+		return syscall.ESRCH
+	}
+	t.Cleanup(func() { signalProcessGroup = originalSignal })
+	cancel()
+	select {
+	case signal := <-signals:
+		t.Fatalf("stopped watcher signaled a stale process group: %v", signal)
+	case <-time.After(processKillDelay):
+	}
+}
+
+func TestTerminateProcessTreeSignalsRecordedProcessGroup(t *testing.T) {
+	originalSignal := signalProcessGroup
+	var received struct {
+		pgid   int
+		signal syscall.Signal
+	}
+	signalProcessGroup = func(pgid int, signal syscall.Signal) error {
+		received.pgid, received.signal = pgid, signal
+		return syscall.ESRCH
+	}
+	t.Cleanup(func() { signalProcessGroup = originalSignal })
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(SignalError{ProcessSignal: syscall.SIGINT})
+	process := &os.Process{Pid: 8675309}
+	if err := terminateProcessTree(process, ctx); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("unexpected simulated stale group result: %v", err)
+	}
+	if received.pgid != process.Pid || received.signal != syscall.SIGINT {
+		t.Fatalf("wrong process-group signal: %#v", received)
+	}
+}
+
 func processUnixHelperCommand(ctx context.Context, mode string, environment ...string) *exec.Cmd {
 	arguments := []string{"-test.run=^TestProcessUnixHelperProcess$"}
 	var cmd *exec.Cmd
@@ -585,7 +800,7 @@ func writeProcessUnixHelperFile(environment, contents string) bool {
 	return filename != "" && os.WriteFile(filename, []byte(contents), 0o600) == nil
 }
 
-func assertTestProcessExited(t *testing.T, pidFile string) {
+func readTestProcessPID(t *testing.T, pidFile string) int {
 	t.Helper()
 	waitForTestFile(t, pidFile)
 	data, err := os.ReadFile(pidFile)
@@ -596,7 +811,45 @@ func assertTestProcessExited(t *testing.T, pidFile string) {
 	if err != nil {
 		t.Fatalf("parse process pid failed: %v", err)
 	}
+	return pid
+}
+
+func trackTestProcess(t *testing.T, pidFile string) int {
+	t.Helper()
+	pid := readTestProcessPID(t, pidFile)
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
+
+func trackMakeWrapCancellationFixture(t *testing.T, pidFile string, done <-chan struct{}, cancel context.CancelCauseFunc) (int, func()) {
+	t.Helper()
+	pid := 0
+	cleaned := false
+	t.Cleanup(func() {
+		if cleaned {
+			return
+		}
+		cancel(SignalError{ProcessSignal: syscall.SIGKILL})
+		if pid != 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Errorf("process cleanup did not release MakeWrap")
+		}
+	})
+	pid = readTestProcessPID(t, pidFile)
+	return pid, func() { cleaned = true }
+}
+
+func assertTestProcessExited(t *testing.T, pidFile string) {
+	t.Helper()
+	assertTestProcessPIDExited(t, trackTestProcess(t, pidFile))
+}
+
+func assertTestProcessPIDExited(t *testing.T, pid int) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {

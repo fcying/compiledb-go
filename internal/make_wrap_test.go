@@ -1324,6 +1324,113 @@ func TestMakeWrapRemovesProxyAfterDiscoveryFailure(t *testing.T) {
 	}
 }
 
+func TestMakeWrapProxyIsolatesRealAndDiscoveryPhases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("phase record fixture requires a POSIX shell")
+	}
+	for _, name := range []string{"MAKE", "MAKE_COMMAND", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKELEVEL", "MFLAGS", "MAKEOVERRIDES"} {
+		value, exists := os.LookupEnv(name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s failed: %v", name, err)
+		}
+		t.Cleanup(func() {
+			if exists {
+				_ = os.Setenv(name, value)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		})
+	}
+	makeExecutable := requireGNUmake(t)
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	if err := os.Mkdir(childDir, 0o755); err != nil {
+		t.Fatalf("create child directory failed: %v", err)
+	}
+	rootMakefile := "export MAKE\nall:\n\t+printf 'root %s\\n' \"$${MAKE}\" >> make-records\n\t+\"$${MAKE}\" --no-print-directory -C child\n"
+	childMakefile := "export MAKE\nall:\n\t+printf 'child %s\\n' \"$${MAKE}\" >> ../make-records\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte(rootMakefile), 0o644); err != nil {
+		t.Fatalf("write root Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte(childMakefile), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+
+	tool := newTestTool(t, Config{
+		BuildDir:     projectDir,
+		OutputFile:   filepath.Join(t.TempDir(), "compile_commands.json"),
+		RegexCompile: RegexCompile,
+		RegexFile:    RegexFile,
+		MakeCommand:  makeExecutable,
+		NoStrict:     true,
+		Encoding:     EncodingRaw,
+	})
+	tool.MakeWrap(nil)
+	if tool.StatusCode != 0 {
+		t.Fatalf("MakeWrap failed: %d", tool.StatusCode)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "make-records"))
+	if err != nil {
+		t.Fatalf("read Make phase records failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("unexpected Make phase record count: %q", data)
+	}
+	labels := []string{"root", "child", "root", "child"}
+	paths := make([]string, len(lines))
+	for index, line := range lines {
+		label, path, ok := strings.Cut(line, " ")
+		if !ok || label != labels[index] {
+			t.Fatalf("unexpected Make phase records: %q", data)
+		}
+		paths[index] = path
+	}
+	if paths[0] != makeExecutable || paths[1] != makeExecutable {
+		t.Fatalf("real Make did not retain its executable: %q", data)
+	}
+	for _, proxy := range paths[2:] {
+		if proxy == makeExecutable || executableBase(proxy) != "make" || !strings.HasPrefix(filepath.Base(filepath.Dir(proxy)), makeProxyDirectoryPrefix) {
+			t.Fatalf("discovery Make did not use its isolated proxy: %q", data)
+		}
+	}
+}
+
+func requireGNUmake(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"make", "gmake", "mingw32-make"} {
+		executable, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		command := exec.Command(executable, "--version")
+		command.Env = makeTestEnvironment()
+		output, err := command.Output()
+		if err == nil && strings.Contains(string(output), "GNU Make") {
+			absolute, err := filepath.Abs(executable)
+			if err != nil {
+				t.Fatalf("resolve GNU Make executable failed: %v", err)
+			}
+			return absolute
+		}
+	}
+	t.Skip("GNU Make is unavailable")
+	return ""
+}
+
+func makeTestEnvironment() []string {
+	environment := make([]string, 0, len(os.Environ()))
+	for _, variable := range os.Environ() {
+		name, _, _ := strings.Cut(variable, "=")
+		switch strings.ToUpper(name) {
+		case "MAKE", "MAKE_COMMAND", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKELEVEL", "MFLAGS", "MAKEOVERRIDES":
+			continue
+		}
+		environment = append(environment, variable)
+	}
+	return environment
+}
+
 func TestMakeWrapTracksGeneratedDryRunDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	makeScript := filepath.Join(tmpDir, "fake-make.sh")

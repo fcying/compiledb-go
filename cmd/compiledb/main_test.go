@@ -1099,6 +1099,24 @@ func replaceTestEnvironment(environment []string, name, value string) []string {
 	return append(result, prefix+value)
 }
 
+func removeTestEnvironment(environment []string, names ...string) []string {
+	result := make([]string, 0, len(environment))
+	for _, variable := range environment {
+		name, _, _ := strings.Cut(variable, "=")
+		remove := false
+		for _, excluded := range names {
+			if strings.EqualFold(name, excluded) {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			result = append(result, variable)
+		}
+	}
+	return result
+}
+
 func TestOverwriteFlagsReplaceExistingDatabase(t *testing.T) {
 	for _, flag := range []string{"-f", "--overwrite"} {
 		t.Run(flag, func(t *testing.T) {
@@ -1140,4 +1158,186 @@ func TestOverwriteFlagsReplaceExistingDatabase(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuiltCLIVerboseStreamContract(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(input, []byte("cc -c main.c\n"), 0o644); err != nil {
+		t.Fatalf("write build log failed: %v", err)
+	}
+	executable := buildTestCLI(t)
+	for _, verbose := range []bool{false, true} {
+		name := "quiet"
+		arguments := []string{"--no-strict", "--parse", input, "--output", "-"}
+		if verbose {
+			name = "verbose"
+			arguments = append([]string{"--verbose"}, arguments...)
+		}
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(executable, arguments...)
+			cmd.Env = removeTestEnvironment(os.Environ(), "GODEBUG")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("CLI failed: %v; stderr=%q", err, stderr.String())
+			}
+			var commands []internal.Command
+			if err := json.Unmarshal(stdout.Bytes(), &commands); err != nil || len(commands) != 1 || commands[0].File != "main.c" {
+				t.Fatalf("stdout is not pure compilation JSON: commands=%#v error=%v stdout=%q", commands, err, stdout.String())
+			}
+			if verbose {
+				if !strings.Contains(stderr.String(), "compiledb-go start") || !strings.Contains(stderr.String(), "Options:") {
+					t.Fatalf("verbose diagnostics missing from stderr: %q", stderr.String())
+				}
+			} else if stderr.Len() != 0 {
+				t.Fatalf("quiet execution emitted diagnostics: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestBuiltCLITopLevelExitContracts(t *testing.T) {
+	executable := buildTestCLI(t)
+	for name, test := range map[string]struct {
+		buildDir func(*testing.T) string
+		status   int
+		stderr   string
+	}{
+		"unknown flag": {status: 2, stderr: "Incorrect Usage"},
+		"missing build directory": {
+			buildDir: func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") },
+			status:   1,
+			stderr:   "access build-dir",
+		},
+		"regular file build directory": {
+			buildDir: func(t *testing.T) string {
+				filename := filepath.Join(t.TempDir(), "not-directory")
+				if err := os.WriteFile(filename, nil, 0o644); err != nil {
+					t.Fatalf("write regular file failed: %v", err)
+				}
+				return filename
+			},
+			status: 1,
+			stderr: "is not a directory",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "compile_commands.json")
+			arguments := []string{"--output", output, "--definitely-invalid"}
+			if test.buildDir != nil {
+				arguments = []string{"--no-strict", "--build-dir", test.buildDir(t), "--parse", "-", "--output", output}
+			}
+			cmd := exec.Command(executable, arguments...)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			var exitError *exec.ExitError
+			if !errors.As(err, &exitError) || exitError.ExitCode() != test.status {
+				t.Fatalf("unexpected exit status: want %d, got %v", test.status, err)
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), test.stderr) {
+				t.Fatalf("unexpected CLI streams: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if _, err := os.Stat(output); !os.IsNotExist(err) {
+				t.Fatalf("failed CLI invocation created database: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuiltCLIMakeRecursionEndToEnd(t *testing.T) {
+	makeExecutable := requireGNUmake(t)
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skipf("C compiler is unavailable: %v", err)
+	}
+	projectDir := t.TempDir()
+	childDir := filepath.Join(projectDir, "child")
+	if err := os.Mkdir(childDir, 0o755); err != nil {
+		t.Fatalf("create child directory failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("all:\n\t+\"$(MAKE)\" --no-print-directory -C child\n"), 0o644); err != nil {
+		t.Fatalf("write root Makefile failed: %v", err)
+	}
+	childMakefile := "all:\n\tcc -c child.c -o child.o\n"
+	if err := os.WriteFile(filepath.Join(childDir, "Makefile"), []byte(childMakefile), 0o644); err != nil {
+		t.Fatalf("write child Makefile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.c"), []byte("int child(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatalf("write child source failed: %v", err)
+	}
+
+	output := filepath.Join(projectDir, "compile_commands.json")
+	cmd := exec.Command(buildTestCLI(t), "--build-dir", projectDir, "--output", output, "make", "--cmd", makeExecutable)
+	cmd.Env = removeTestEnvironment(os.Environ(), encodingEnvVar, "MAKE", "MAKE_COMMAND", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKELEVEL", "MFLAGS", "MAKEOVERRIDES")
+	if result, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("built CLI Make invocation failed: %v\n%s", err, result)
+	}
+	commands := readBuiltCLICommands(t, output)
+	physicalChildDir, err := filepath.EvalSymlinks(childDir)
+	if err != nil {
+		t.Fatalf("resolve child directory failed: %v", err)
+	}
+	if len(commands) != 1 || commands[0].File != "child.c" || commands[0].Directory != filepath.ToSlash(physicalChildDir) {
+		t.Fatalf("recursive Make produced wrong database: %#v", commands)
+	}
+	object := filepath.Join(childDir, "child.o")
+	if err := os.Remove(object); err != nil {
+		t.Fatalf("remove child object before replay failed: %v", err)
+	}
+	replay := exec.Command(commands[0].Arguments[0], commands[0].Arguments[1:]...)
+	replay.Dir = childDir
+	if result, err := replay.CombinedOutput(); err != nil {
+		t.Fatalf("compilation database command did not replay: %v\n%s", err, result)
+	}
+	if _, err := os.Stat(object); err != nil {
+		t.Fatalf("replayed command did not rebuild object: %v", err)
+	}
+}
+
+func readBuiltCLICommands(t *testing.T, filename string) []internal.Command {
+	t.Helper()
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatalf("read compilation database failed: %v", err)
+	}
+	var commands []internal.Command
+	if err := json.Unmarshal(data, &commands); err != nil {
+		t.Fatalf("decode compilation database failed: %v", err)
+	}
+	return commands
+}
+
+func buildTestCLI(t *testing.T) string {
+	t.Helper()
+	executable := filepath.Join(t.TempDir(), "compiledb")
+	if runtime.GOOS == "windows" {
+		executable += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", executable, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI failed: %v\n%s", err, output)
+	}
+	return executable
+}
+
+func requireGNUmake(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"make", "gmake", "mingw32-make"} {
+		executable, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		command := exec.Command(executable, "--version")
+		command.Env = removeTestEnvironment(os.Environ(), "MAKE", "MAKE_COMMAND", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKELEVEL", "MFLAGS", "MAKEOVERRIDES")
+		output, err := command.Output()
+		if err == nil && strings.Contains(string(output), "GNU Make") {
+			absolute, err := filepath.Abs(executable)
+			if err != nil {
+				t.Fatalf("resolve GNU Make executable failed: %v", err)
+			}
+			return absolute
+		}
+	}
+	t.Skip("GNU Make is unavailable")
+	return ""
 }

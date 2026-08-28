@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -415,15 +416,20 @@ func TestRealCompilerMacroAffectingOptionsAreReplayed(t *testing.T) {
 	}
 
 	withoutPIC := tool.getPredefinedMacros([]string{compiler, "-fPIC", "-fno-pic", "-c", "main.c"}, "main.c", workingDir)
+	if len(withoutPIC) == 0 {
+		t.Fatal("-fno-pic probe returned no predefined macros")
+	}
 	for _, macro := range withoutPIC {
 		if macro == "-D__PIC__=1" || macro == "-D__PIC__=2" || macro == "-D__PIE__=1" || macro == "-D__PIE__=2" {
 			t.Fatalf("-fno-pic probe retained a stale position-independent macro: %s", macro)
 		}
 	}
 
-	longDouble64 := tool.getPredefinedMacros([]string{compiler, "-mlong-double-64", "-c", "main.c"}, "main.c", workingDir)
-	if !slices.Contains(longDouble64, "-D__SIZEOF_LONG_DOUBLE__=8") {
-		t.Fatalf("expected 64-bit long double macros, got %v", longDouble64)
+	if runtime.GOARCH == "386" || runtime.GOARCH == "amd64" {
+		longDouble64 := tool.getPredefinedMacros([]string{compiler, "-mlong-double-64", "-c", "main.c"}, "main.c", workingDir)
+		if !slices.Contains(longDouble64, "-D__SIZEOF_LONG_DOUBLE__=8") {
+			t.Fatalf("expected 64-bit long double macros, got %v", longDouble64)
+		}
 	}
 }
 
