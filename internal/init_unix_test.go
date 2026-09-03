@@ -4,10 +4,13 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -44,6 +47,272 @@ func TestStrictSourceFileAcceptsOnlyRegularFiles(t *testing.T) {
 			t.Fatalf("non-regular source was accepted: %q", filename)
 		}
 	}
+}
+
+func TestWriteFileAtomicallyRejectsNonRegularTarget(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	if err := syscall.Mkfifo(outputFile, 0o600); err != nil {
+		t.Fatalf("create output FIFO failed: %v", err)
+	}
+
+	err := writeFileAtomically(outputFile, []byte("[]\n"))
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("non-regular output was not rejected: %v", err)
+	}
+	info, err := os.Lstat(outputFile)
+	if err != nil {
+		t.Fatalf("stat output FIFO failed: %v", err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("output FIFO was replaced with mode %v", info.Mode())
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read output directory failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(outputFile) {
+		t.Fatalf("rejecting output FIFO left unexpected files: %#v", entries)
+	}
+}
+
+func TestWriteJSONRejectsFIFOWithoutBlocking(t *testing.T) {
+	const (
+		helperEnvironment = "COMPILEDB_TEST_WRITE_JSON_FIFO_HELPER"
+		outputEnvironment = "COMPILEDB_TEST_WRITE_JSON_FIFO_PATH"
+	)
+	if parentPID, err := strconv.Atoi(os.Getenv(helperEnvironment)); err == nil && parentPID == os.Getppid() {
+		outputFile := os.Getenv(outputEnvironment)
+		info, statErr := os.Lstat(outputFile)
+		if statErr != nil || info.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatalf("invalid FIFO helper output %q: %v", outputFile, statErr)
+		}
+		tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+		commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-c", "main.c"}, File: "main.c"}}
+		tool.WriteJSON(outputFile, len(commands), &commands)
+		return
+	}
+
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	if err := syscall.Mkfifo(outputFile, 0o600); err != nil {
+		t.Fatalf("create output FIFO failed: %v", err)
+	}
+	unrelatedFile := filepath.Join(tmpDir, "unrelated.json")
+	if err := os.WriteFile(unrelatedFile, []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatalf("create unrelated output failed: %v", err)
+	}
+	t.Setenv(helperEnvironment, "ambient")
+	t.Setenv(outputEnvironment, unrelatedFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWriteJSONRejectsFIFOWithoutBlocking$")
+	environment := os.Environ()
+	cmd.Env = make([]string, 0, len(environment)+2)
+	for _, value := range environment {
+		name, _, _ := strings.Cut(value, "=")
+		if name == helperEnvironment || name == outputEnvironment {
+			continue
+		}
+		cmd.Env = append(cmd.Env, value)
+	}
+	cmd.Env = append(cmd.Env,
+		helperEnvironment+"="+strconv.Itoa(os.Getpid()),
+		outputEnvironment+"="+outputFile,
+	)
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatal("WriteJSON blocked while loading the output FIFO")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("FIFO helper did not fail through WriteJSON: %v", err)
+	}
+	info, err := os.Lstat(outputFile)
+	if err != nil {
+		t.Fatalf("stat output FIFO failed: %v", err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("WriteJSON replaced output FIFO with mode %v", info.Mode())
+	}
+	unrelatedData, err := os.ReadFile(unrelatedFile)
+	if err != nil {
+		t.Fatalf("read unrelated output failed: %v", err)
+	}
+	if string(unrelatedData) != "unchanged\n" {
+		t.Fatalf("FIFO helper changed unrelated output: %q", unrelatedData)
+	}
+}
+
+func TestWriteJSONPreservesOutputSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	physicalLinkDir := filepath.Join(realDir, "subdir")
+	if err := os.MkdirAll(physicalLinkDir, 0o755); err != nil {
+		t.Fatalf("create symlink test directories failed: %v", err)
+	}
+	target := filepath.Join(realDir, "database.json")
+	writeTestJSON(t, target, []Command{{Directory: "/project", Command: "cc -DOLD -c main.c", File: "main.c"}})
+	aliasDir := filepath.Join(tmpDir, "alias")
+	if err := os.Symlink(filepath.Join("real", "subdir"), aliasDir); err != nil {
+		t.Fatalf("create parent directory symlink failed: %v", err)
+	}
+	outputFile := filepath.Join(aliasDir, "compile_commands.json")
+	if err := os.Symlink(filepath.Join("..", filepath.Base(target)), outputFile); err != nil {
+		t.Fatalf("create output symlink failed: %v", err)
+	}
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-DNEW", "-c", "main.c"}, File: "main.c"}}
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	aliasInfo, err := os.Lstat(aliasDir)
+	if err != nil {
+		t.Fatalf("stat parent directory symlink failed: %v", err)
+	}
+	if aliasInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("atomic replacement replaced the parent directory symlink")
+	}
+	outputInfo, err := os.Lstat(outputFile)
+	if err != nil {
+		t.Fatalf("stat output symlink failed: %v", err)
+	}
+	if outputInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("atomic replacement replaced the output symlink")
+	}
+	entries := readTestDatabase(t, target)
+	if len(entries) != 1 {
+		t.Fatalf("unexpected target entries: %#v", entries)
+	}
+	assertTestArgument(t, entries[0], 1, "-DNEW")
+}
+
+func TestResolveOutputFilenameRejectsDanglingSymlink(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	if err := os.Symlink("missing.json", outputFile); err != nil {
+		t.Fatalf("create dangling output symlink failed: %v", err)
+	}
+
+	if resolved, err := resolveOutputFilename(outputFile); err == nil {
+		t.Fatalf("resolved dangling output symlink as %q", resolved)
+	}
+}
+
+func TestResolveOutputFilenameResolvesMissingParentBeforeDotDot(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "subdir"), 0o755); err != nil {
+		t.Fatalf("create physical output directory failed: %v", err)
+	}
+	aliasDir := filepath.Join(tmpDir, "alias")
+	if err := os.Symlink(filepath.Join("real", "subdir"), aliasDir); err != nil {
+		t.Fatalf("create parent directory symlink failed: %v", err)
+	}
+	separator := string(filepath.Separator)
+	outputFile := aliasDir + separator + ".." + separator + "compile_commands.json"
+
+	resolved, err := resolveOutputFilename(outputFile)
+	if err != nil {
+		t.Fatalf("resolve missing output failed: %v", err)
+	}
+	physicalRealDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatalf("resolve physical output directory failed: %v", err)
+	}
+	want := filepath.Join(physicalRealDir, "compile_commands.json")
+	if resolved != want {
+		t.Fatalf("unexpected missing output target: want %q, got %q", want, resolved)
+	}
+}
+
+func TestWriteJSONAcceptsLongOutputBasename(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), strings.Repeat("x", 240))
+	if err := os.WriteFile(outputFile, nil, 0o600); err != nil {
+		if errors.Is(err, syscall.ENAMETOOLONG) {
+			t.Skipf("filesystem rejects the long output basename: %v", err)
+		}
+		t.Fatalf("create long-name output failed: %v", err)
+	}
+	if err := os.Remove(outputFile); err != nil {
+		t.Fatalf("remove long-name output preflight file failed: %v", err)
+	}
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-c", "main.c"}, File: "main.c"}}
+
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 1 || entries[0]["file"] != "main.c" {
+		t.Fatalf("unexpected long-name output entries: %#v", entries)
+	}
+}
+
+func TestWriteJSONPreservesOutputMode(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	writeTestJSON(t, outputFile, []Command{{Directory: "/project", Command: "cc -DOLD -c main.c", File: "main.c"}})
+	if err := os.Chmod(outputFile, 0o640); err != nil {
+		t.Fatalf("set original output mode failed: %v", err)
+	}
+	oldUmask := syscall.Umask(0o077)
+	defer syscall.Umask(oldUmask)
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-DNEW", "-c", "main.c"}, File: "main.c"}}
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	info, err := os.Stat(outputFile)
+	if err != nil {
+		t.Fatalf("stat replaced output failed: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("output mode changed: want 0640, got %04o", got)
+	}
+}
+
+func TestWriteJSONNewOutputRespectsUmask(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	oldUmask := syscall.Umask(0o077)
+	defer syscall.Umask(oldUmask)
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-c", "main.c"}, File: "main.c"}}
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	info, err := os.Stat(outputFile)
+	if err != nil {
+		t.Fatalf("stat new output failed: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("new output ignored umask: want 0600, got %04o", got)
+	}
+}
+
+func TestWriteJSONPreservesOpenReaderSnapshot(t *testing.T) {
+	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
+	writeTestJSON(t, outputFile, []Command{{Directory: "/project", Command: "cc -DOLD -c main.c", File: "main.c"}})
+	reader, err := os.Open(outputFile)
+	if err != nil {
+		t.Fatalf("open original database failed: %v", err)
+	}
+	defer reader.Close()
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-DNEW", "-c", "main.c"}, File: "main.c"}}
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	var oldEntries []Command
+	if err := json.NewDecoder(reader).Decode(&oldEntries); err != nil {
+		t.Fatalf("decode original reader failed: %v", err)
+	}
+	if len(oldEntries) != 1 || oldEntries[0].File != "main.c" || !strings.Contains(oldEntries[0].Command, "-DOLD") {
+		t.Fatalf("open reader did not retain the old database: %#v", oldEntries)
+	}
+	newEntries := readTestDatabase(t, outputFile)
+	if len(newEntries) != 1 {
+		t.Fatalf("unexpected replacement entries: %#v", newEntries)
+	}
+	assertTestArgument(t, newEntries[0], 1, "-DNEW")
 }
 
 func TestExpandCompilerResponseFilesRejectsFIFO(t *testing.T) {
