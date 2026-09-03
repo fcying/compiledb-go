@@ -3,7 +3,9 @@ package internal
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,6 +225,10 @@ func resolveLegacyCompilationDatabasePath(entry compilationDatabaseEntry, buildD
 }
 
 func loadCompilationDatabase(filename string) []json.RawMessage {
+	info, err := os.Stat(filename)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil
@@ -288,6 +294,112 @@ func mergeCompilationDatabase(entries []json.RawMessage, strict bool, buildDir s
 	return filtered
 }
 
+func resolveOutputFilename(filename string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(filename)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	info, lstatErr := os.Lstat(filename)
+	if lstatErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", err
+		}
+		return filename, nil
+	}
+	if !os.IsNotExist(lstatErr) {
+		return "", lstatErr
+	}
+	directory, base := filepath.Split(filename)
+	if directory == "" {
+		directory = "."
+	}
+	directory, err = filepath.EvalSymlinks(directory)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(directory, base), nil
+}
+
+func createAtomicTempFile(directory string, mode os.FileMode) (*os.File, error) {
+	prefix := filepath.Join(directory, ".compiledb-tmp-")
+	for range 100 {
+		outfile, err := os.OpenFile(prefix+rand.Text(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if os.IsExist(err) {
+			continue
+		}
+		return outfile, err
+	}
+	return nil, &os.PathError{Op: "open", Path: prefix + "*", Err: os.ErrExist}
+}
+
+func writeFileInPlace(filename string, data []byte, mode os.FileMode) error {
+	outfile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := outfile.Write(data); err != nil {
+		_ = outfile.Close()
+		return err
+	}
+	return outfile.Close()
+}
+
+func replaceFileAtomically(filename string, data []byte, mode os.FileMode, targetExists bool) error {
+	outfile, err := createAtomicTempFile(filepath.Dir(filename), mode)
+	if err != nil {
+		return err
+	}
+	temporaryFilename := outfile.Name()
+	defer os.Remove(temporaryFilename)
+
+	if targetExists {
+		if err := outfile.Chmod(mode); err != nil {
+			_ = outfile.Close()
+			return err
+		}
+	}
+	if _, err := outfile.Write(data); err != nil {
+		_ = outfile.Close()
+		return err
+	}
+	if err := outfile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryFilename, filename)
+}
+
+func writeFileAtomically(filename string, data []byte) error {
+	filename, err := resolveOutputFilename(filename)
+	if err != nil {
+		return err
+	}
+
+	mode := os.FileMode(0o666)
+	targetExists := false
+	if info, statErr := os.Stat(filename); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("output %q is not a regular file", filename)
+		}
+		mode = info.Mode().Perm()
+		targetExists = true
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+
+	atomicErr := replaceFileAtomically(filename, data, mode, targetExists)
+	if atomicErr == nil {
+		return nil
+	}
+	if fallbackErr := writeFileInPlace(filename, data, mode); fallbackErr != nil {
+		return fmt.Errorf("atomic replace failed (%v), then in-place write failed: %w", atomicErr, fallbackErr)
+	}
+	return nil
+}
+
 func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 	payload := []Command{}
 	if data != nil && *data != nil {
@@ -338,14 +450,7 @@ func (t *Tool) WriteJSON(filename string, _ int, data *[]Command) {
 		t.Logger.Fatalf("create directory %v failed! err:%v", filepath.Dir(filename), err)
 	}
 
-	outfile, err := os.Create(filename)
-	if err != nil {
-		t.Logger.Fatalf("create %v failed! err:%v", filename, err)
-	}
-	defer outfile.Close()
-
-	_, err = outfile.Write(jsonData)
-	if err != nil {
+	if err := writeFileAtomically(filename, jsonData); err != nil {
 		t.Logger.Fatalf("write %v failed! err:%v", filename, err)
 	}
 	t.Logger.Infof("write %d entries to %s", len(entries), filename)

@@ -763,6 +763,52 @@ func TestWriteJSONStdoutUsesOnlyCurrentEntries(t *testing.T) {
 	assertTestArgument(t, entries[0], 1, "-DTWO")
 }
 
+func TestWriteJSONReplacesFileAtomically(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputFile := filepath.Join(tmpDir, "compile_commands.json")
+	writeTestJSON(t, outputFile, []map[string]any{{
+		"directory": "/project",
+		"command":   "cc -DOLD -c main.c",
+		"file":      "main.c",
+	}})
+	original, err := os.Open(outputFile)
+	if err != nil {
+		t.Fatalf("open original output failed: %v", err)
+	}
+	before, statErr := original.Stat()
+	closeErr := original.Close()
+	if statErr != nil {
+		t.Fatalf("stat original output failed: %v", statErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close original output failed: %v", closeErr)
+	}
+
+	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
+	commands := []Command{{Directory: "/project", Arguments: []string{"cc", "-DNEW", "-c", "main.c"}, File: "main.c"}}
+	tool.WriteJSON(outputFile, len(commands), &commands)
+
+	after, err := os.Stat(outputFile)
+	if err != nil {
+		t.Fatalf("stat replaced output failed: %v", err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("compilation database was rewritten in place instead of atomically replaced")
+	}
+	entries := readTestDatabase(t, outputFile)
+	if len(entries) != 1 || entries[0]["file"] != "main.c" {
+		t.Fatalf("unexpected replacement contents: %#v", entries)
+	}
+	assertTestArgument(t, entries[0], 1, "-DNEW")
+	directoryEntries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read output directory failed: %v", err)
+	}
+	if len(directoryEntries) != 1 || directoryEntries[0].Name() != filepath.Base(outputFile) {
+		t.Fatalf("atomic replacement left temporary files: %#v", directoryEntries)
+	}
+}
+
 func TestWriteJSONFileEndsWithOneNewline(t *testing.T) {
 	outputFile := filepath.Join(t.TempDir(), "compile_commands.json")
 	tool := newTestTool(t, Config{OutputFile: outputFile, NoStrict: true})
