@@ -55,7 +55,7 @@ func splitCommands(commands string) []string {
 func processCompileCommand(command string, workingDir string) ([]string, string) {
 	arguments := []string{}
 	filePath := ""
-	arguments = strings.Fields(command)
+	arguments = splitArgs(command)
 
 	// check compile word
 	findCompile := false
@@ -106,10 +106,55 @@ func processCompileCommand(command string, workingDir string) ([]string, string)
 	}
 
 	if ParseConfig.Macros != "" {
-		arguments = append(arguments, strings.Fields(ParseConfig.Macros)...)
+		arguments = append(arguments, splitArgs(ParseConfig.Macros)...)
 	}
 
 	return arguments, filePath
+}
+
+func splitArgs(input string) []string {
+	args := []string{}
+	buf := strings.Builder{}
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+
+	flush := func() {
+		if buf.Len() > 0 {
+			args = append(args, buf.String())
+			buf.Reset()
+		}
+	}
+
+	for _, r := range input {
+		switch {
+		case escaped:
+			buf.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case r == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+		case r == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+		case (r == ' ' || r == '\t') && !inSingleQuote && !inDoubleQuote:
+			flush()
+		default:
+			buf.WriteRune(r)
+		}
+	}
+
+	if escaped {
+		buf.WriteRune('\\')
+	}
+	flush()
+
+	if inSingleQuote || inDoubleQuote {
+		log.Warnf("failed to parse arguments %q: unbalanced quotes", input)
+		return strings.Fields(input)
+	}
+
+	return args
 }
 
 func Parse(buildLog []string) {
